@@ -78,23 +78,46 @@ async function getGoogleSheet() {
 }
 
 /**
+ * Đảm bảo header có cột Debtor (migrate schema)
+ * @param {GoogleSpreadsheetWorksheet} sheet
+ */
+async function ensureDebtorColumn(sheet) {
+  await sheet.loadHeaderRow();
+  const headers = sheet.headerValues;
+  if (!headers.includes('Debtor')) {
+    const newHeaders = [...headers];
+    const contentIndex = newHeaders.indexOf('Content');
+    if (contentIndex !== -1) {
+      newHeaders.splice(contentIndex, 0, 'Debtor');
+    } else {
+      newHeaders.push('Debtor');
+    }
+    await sheet.setHeaderRow(newHeaders);
+    console.log('✅ Đã thêm cột Debtor vào Sheet');
+  }
+}
+
+/**
  * Thêm một dòng mới vào Google Sheet
- * @param {Object} rowData - Dữ liệu dòng: { Date, UserID, Type, Amount, Content }
+ * @param {Object} rowData - Dữ liệu dòng: { Date, UserID, Debtor, Type, Amount, Content }
  */
 async function appendRow(rowData) {
   try {
     const doc = await getGoogleSheet();
-    const sheet = doc.sheetsByIndex[0]; // Sheet đầu tiên
+    const sheet = doc.sheetsByIndex[0];
+    
+    await ensureDebtorColumn(sheet);
     
     await sheet.addRow({
       Date: rowData.Date,
       UserID: rowData.UserID,
+      Debtor: rowData.Debtor || 'Chung',
       Type: rowData.Type,
       Amount: rowData.Amount,
       Content: rowData.Content || '',
     });
     
-    console.log(`✅ Đã thêm dòng: ${rowData.Type} - ${rowData.Amount}`);
+    console.log(`✅ Đã thêm dòng: ${rowData.Type} - ${rowData.Amount} - @${rowData.Debtor || 'Chung'}`);
   } catch (error) {
     console.error('❌ Lỗi thêm dòng vào Sheet:', error.message);
     throw new Error('Không thể ghi dữ liệu vào Google Sheets');
@@ -118,6 +141,7 @@ async function getRowsByUser(userId) {
     return userRows.map(row => ({
       Date: row.get('Date'),
       UserID: row.get('UserID'),
+      Debtor: row.get('Debtor') || 'Chung',
       Type: row.get('Type'),
       Amount: parseInt(row.get('Amount')) || 0,
       Content: row.get('Content') || '',
@@ -207,7 +231,7 @@ function formatAmount(amount) {
 /**
  * Phân tích lệnh từ tin nhắn
  * @param {string} text - Nội dung tin nhắn
- * @returns {Object|null} - { intent, amount, content } hoặc null
+ * @returns {Object|null} - { intent, amount, debtor, content } hoặc null
  */
 function parseCommand(text) {
   if (!text) return null;
@@ -215,16 +239,19 @@ function parseCommand(text) {
   const normalizedText = text.trim().toLowerCase();
   
   // Regex cho lệnh GHI NỢ: "no", "nợ"
+  // Format: no 50k @TenNguoi noi dung
   const debtRegex = /^(no|nợ)\s+(\S+)\s*(.*)$/i;
   const debtMatch = text.match(debtRegex);
   
   if (debtMatch) {
     const amount = parseAmount(debtMatch[2]);
     if (amount) {
+      const { debtor, content } = parseDebtorAndContent(debtMatch[3]);
       return {
         intent: 'DEBT',
         amount: amount,
-        content: debtMatch[3].trim() || 'Không có nội dung',
+        debtor: debtor,
+        content: content || 'Không có nội dung',
       };
     }
   }
@@ -236,18 +263,26 @@ function parseCommand(text) {
   if (paidMatch) {
     const amount = parseAmount(paidMatch[2]);
     if (amount) {
+      const { debtor, content } = parseDebtorAndContent(paidMatch[3]);
       return {
         intent: 'PAID',
         amount: amount,
-        content: paidMatch[3].trim() || 'Không có nội dung',
+        debtor: debtor,
+        content: content || 'Không có nội dung',
       };
     }
   }
   
   // Regex cho lệnh XEM NỢ: "check", "tong", "tổng", "show no"
-  const checkRegex = /^(check|tong|tổng|show\s*no|xem\s*no|xem\s*nợ)$/i;
-  if (checkRegex.test(normalizedText)) {
-    return { intent: 'CHECK' };
+  // Có thể kèm @TenNguoi để xem riêng
+  const checkRegex = /^(check|tong|tổng|show\s*no|xem\s*no|xem\s*nợ)\s*(@\S+)?$/i;
+  const checkMatch = normalizedText.match(checkRegex);
+  if (checkMatch) {
+    let debtor = null;
+    if (checkMatch[2]) {
+      debtor = checkMatch[2].replace('@', '').replace(/_/g, ' ').trim();
+    }
+    return { intent: 'CHECK', debtor: debtor };
   }
   
   // Regex cho lệnh HELP
@@ -259,6 +294,30 @@ function parseCommand(text) {
   return null;
 }
 
+/**
+ * Parse debtor và content từ phần còn lại của lệnh
+ * @param {string} remainder - Phần text sau số tiền
+ * @returns {Object} - { debtor, content }
+ */
+function parseDebtorAndContent(remainder) {
+  if (!remainder) {
+    return { debtor: null, content: '' };
+  }
+  
+  const trimmed = remainder.trim();
+  
+  // Kiểm tra xem có bắt đầu bằng @TenNguoi không
+  const debtorMatch = trimmed.match(/^@(\S+)\s*(.*)$/);
+  
+  if (debtorMatch) {
+    const debtor = debtorMatch[1].replace(/_/g, ' ').trim();
+    const content = debtorMatch[2].trim();
+    return { debtor, content };
+  }
+  
+  return { debtor: null, content: trimmed };
+}
+
 // ============================================
 // DEBT SERVICE - XỬ LÝ NGHIỆP VỤ
 // ============================================
@@ -267,13 +326,15 @@ function parseCommand(text) {
  * Xử lý lệnh ghi nợ
  * @param {string} userId - Facebook User ID
  * @param {number} amount - Số tiền
+ * @param {string} debtor - Tên người nợ
  * @param {string} content - Nội dung
  * @returns {Promise<string>} - Tin nhắn phản hồi
  */
-async function handleAddDebt(userId, amount, content) {
+async function handleAddDebt(userId, amount, debtor, content) {
   const rowData = {
     Date: new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
     UserID: userId,
+    Debtor: debtor || 'Chung',
     Type: 'DEBT',
     Amount: amount,
     Content: content,
@@ -281,20 +342,23 @@ async function handleAddDebt(userId, amount, content) {
   
   await appendRow(rowData);
   
-  return `✅ Đã ghi nợ: ${formatAmount(amount)}đ\n📝 Nội dung: ${content}`;
+  const debtorLabel = debtor ? `@${debtor}` : 'Chung';
+  return `✅ Đã ghi nợ: ${formatAmount(amount)}đ\n👤 Người nợ: ${debtorLabel}\n📝 Nội dung: ${content}`;
 }
 
 /**
  * Xử lý lệnh trả nợ
  * @param {string} userId - Facebook User ID
  * @param {number} amount - Số tiền
+ * @param {string} debtor - Tên người trả
  * @param {string} content - Nội dung
  * @returns {Promise<string>} - Tin nhắn phản hồi
  */
-async function handleRepayDebt(userId, amount, content) {
+async function handleRepayDebt(userId, amount, debtor, content) {
   const rowData = {
     Date: new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
     UserID: userId,
+    Debtor: debtor || 'Chung',
     Type: 'PAID',
     Amount: amount,
     Content: content,
@@ -302,54 +366,101 @@ async function handleRepayDebt(userId, amount, content) {
   
   await appendRow(rowData);
   
-  return `✅ Đã ghi trả: ${formatAmount(amount)}đ\n📝 Nội dung: ${content}`;
+  const debtorLabel = debtor ? `@${debtor}` : 'Chung';
+  return `✅ Đã ghi trả: ${formatAmount(amount)}đ\n👤 Người trả: ${debtorLabel}\n📝 Nội dung: ${content}`;
 }
 
 /**
  * Xử lý lệnh xem nợ
  * @param {string} userId - Facebook User ID
+ * @param {string|null} filterDebtor - Lọc theo người nợ (null = tất cả)
  * @returns {Promise<string>} - Tin nhắn phản hồi
  */
-async function handleCheckDebt(userId) {
+async function handleCheckDebt(userId, filterDebtor) {
   const rows = await getRowsByUser(userId);
   
   if (rows.length === 0) {
     return '📋 Bạn chưa có giao dịch nào.';
   }
   
-  // Tính tổng
-  let totalDebt = 0;
-  let totalPaid = 0;
+  // Lọc theo debtor nếu có
+  const filteredRows = filterDebtor 
+    ? rows.filter(r => r.Debtor.toLowerCase() === filterDebtor.toLowerCase())
+    : rows;
   
-  for (const row of rows) {
+  if (filterDebtor && filteredRows.length === 0) {
+    return `📋 Không tìm thấy giao dịch của @${filterDebtor}`;
+  }
+  
+  // Tính tổng theo từng debtor
+  const debtorStats = {};
+  
+  for (const row of filteredRows) {
+    const debtor = row.Debtor || 'Chung';
+    if (!debtorStats[debtor]) {
+      debtorStats[debtor] = { debt: 0, paid: 0 };
+    }
     if (row.Type === 'DEBT') {
-      totalDebt += row.Amount;
+      debtorStats[debtor].debt += row.Amount;
     } else if (row.Type === 'PAID') {
-      totalPaid += row.Amount;
+      debtorStats[debtor].paid += row.Amount;
     }
   }
   
-  const balance = totalDebt - totalPaid;
+  // Tính tổng toàn bộ
+  let totalDebt = 0;
+  let totalPaid = 0;
+  for (const stats of Object.values(debtorStats)) {
+    totalDebt += stats.debt;
+    totalPaid += stats.paid;
+  }
+  const totalBalance = totalDebt - totalPaid;
   
-  // Lấy 5 giao dịch gần nhất (cuối mảng)
-  const last5 = rows.slice(-5).reverse();
+  let responseText = '';
   
-  let historyText = '📋 Lịch sử 5 giao dịch gần nhất:\n';
-  last5.forEach((row, index) => {
-    const typeLabel = row.Type === 'DEBT' ? '🔴 Nợ' : '🟢 Trả';
-    historyText += `${index + 1}. ${typeLabel} ${formatAmount(row.Amount)}đ - ${row.Date}\n`;
-    if (row.Content) {
-      historyText += `   📝 ${row.Content}\n`;
+  // Nếu xem riêng 1 người
+  if (filterDebtor) {
+    const stats = debtorStats[filterDebtor] || { debt: 0, paid: 0 };
+    const balance = stats.debt - stats.paid;
+    
+    responseText = `📊 CHI TIẾT @${filterDebtor}\n`;
+    responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
+    responseText += `🔴 Tổng nợ: ${formatAmount(stats.debt)}đ\n`;
+    responseText += `🟢 Đã trả: ${formatAmount(stats.paid)}đ\n`;
+    responseText += `💰 CÒN NỢ: ${formatAmount(balance)}đ\n`;
+    
+    // 5 giao dịch gần nhất của người này
+    const last5 = filteredRows.slice(-5).reverse();
+    if (last5.length > 0) {
+      responseText += `\n📋 Giao dịch gần nhất:\n`;
+      last5.forEach((row, i) => {
+        const typeLabel = row.Type === 'DEBT' ? '🔴' : '🟢';
+        responseText += `${i+1}. ${typeLabel} ${formatAmount(row.Amount)}đ\n`;
+      });
     }
-  });
+  } else {
+    // Xem tất cả - breakdown theo từng người
+    responseText = `📊 TỔNG HỢP NỢ\n`;
+    responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
+    
+    // Sắp xếp theo số dư giảm dần
+    const sortedDebtors = Object.entries(debtorStats)
+      .map(([name, stats]) => ({ name, balance: stats.debt - stats.paid, ...stats }))
+      .sort((a, b) => b.balance - a.balance);
+    
+    for (const d of sortedDebtors) {
+      if (d.balance !== 0) {
+        const icon = d.balance > 0 ? '🔴' : '🟢';
+        responseText += `${icon} @${d.name}: ${formatAmount(d.balance)}đ\n`;
+      }
+    }
+    
+    responseText += `\n━━━━━━━━━━━━━━━━━━━━\n`;
+    responseText += `💰 TỔNG CÒN NỢ: ${formatAmount(totalBalance)}đ\n`;
+    responseText += `\n💡 Gõ "check @Tên" để xem chi tiết`;
+  }
   
-  historyText += `\n━━━━━━━━━━━━━━━━━━━━\n`;
-  historyText += `📊 TỔNG KẾT:\n`;
-  historyText += `🔴 Tổng nợ: ${formatAmount(totalDebt)}đ\n`;
-  historyText += `🟢 Đã trả: ${formatAmount(totalPaid)}đ\n`;
-  historyText += `💰 CÒN NỢ: ${formatAmount(balance)}đ`;
-  
-  return historyText;
+  return responseText;
 }
 
 /**
@@ -361,26 +472,28 @@ function handleHelp() {
 
 ━━━━━━━━━━━━━━━━━━━━
 📝 GHI NỢ:
-• no [số tiền] [nội dung]
-• Ví dụ: no 50k tiền cơm
-• Ví dụ: nợ 100k mua đồ
+• no [số tiền] @[tên] [nội dung]
+• Ví dụ: no 50k @A tiền cơm
+• Ví dụ: nợ 100k @B mua đồ
+• Không có @tên = ghi chung
 
 ━━━━━━━━━━━━━━━━━━━━
 💵 TRẢ NỢ:
-• tra [số tiền] [nội dung]
-• Ví dụ: tra 20k
-• Ví dụ: trả 500k lương về
+• tra [số tiền] @[tên] [nội dung]
+• Ví dụ: tra 20k @A
+• Ví dụ: trả 500k @B lương về
 
 ━━━━━━━━━━━━━━━━━━━━
 📊 XEM NỢ:
-• check
-• tong
-• show no
+• check - xem tất cả
+• check @A - xem riêng A
+• tong / show no
 
 ━━━━━━━━━━━━━━━━━━━━
 💡 GHI CHÚ:
-• Hỗ trợ: 50k = 50,000đ
-• Hỗ trợ: 1m = 1,000,000đ`;
+• 50k = 50,000đ
+• 1m = 1,000,000đ
+• @Tên_Dài dùng dấu _`;
 }
 
 // ============================================
@@ -408,15 +521,15 @@ async function handleMessage(userId, messageText) {
     
     switch (command.intent) {
       case 'DEBT':
-        response = await handleAddDebt(userId, command.amount, command.content);
+        response = await handleAddDebt(userId, command.amount, command.debtor, command.content);
         break;
         
       case 'PAID':
-        response = await handleRepayDebt(userId, command.amount, command.content);
+        response = await handleRepayDebt(userId, command.amount, command.debtor, command.content);
         break;
         
       case 'CHECK':
-        response = await handleCheckDebt(userId);
+        response = await handleCheckDebt(userId, command.debtor);
         break;
         
       case 'HELP':
