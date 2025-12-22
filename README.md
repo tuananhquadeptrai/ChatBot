@@ -1,8 +1,8 @@
-# 📱 Facebook Messenger Debt Tracker Bot v2.2
+# 📱 Facebook Messenger Debt Tracker Bot v2.3
 
 Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets làm database.
 
-**✨ Tính năng mới v2.2: Zero-config onboarding** - Không cần setup thủ công!
+**✨ Tính năng mới v2.3: Flexible Input** - Gõ tự nhiên, không cần @!
 
 ## 🚀 Tính năng
 
@@ -10,14 +10,18 @@ Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets
 
 | Lệnh | Mô tả | Ví dụ |
 |------|-------|-------|
-| `no [số tiền] @[người] [nội dung]` | Ghi nợ | `no 50k @Bao tiền cơm` |
-| `nợ [số tiền] @[người] [nội dung]` | Ghi nợ (có dấu) | `nợ 100k @An mua đồ` |
-| `tra [số tiền] @[người] [nội dung]` | Trả nợ | `tra 20k @Bao` |
-| `trả [số tiền] @[người] [nội dung]` | Trả nợ (có dấu) | `trả 500k @An lương về` |
+| `no [số tiền] @[người] [nội dung]` | Ghi nợ (format cũ) | `no 50k @Bao tiền cơm` |
+| `no [người] [số tiền] [nội dung]` | Ghi nợ (format mới) | `no tuan anh 50k tiền cơm` |
+| `[người] no [số tiền] [nội dung]` | Ghi nợ (tên trước) | `tuan anh no 50k tiền cơm` |
+| `tra [số tiền] @[người] [nội dung]` | Trả nợ (format cũ) | `tra 20k @Bao` |
+| `tra [người] [số tiền] [nội dung]` | Trả nợ (format mới) | `tra bao 50k lương về` |
+| `[người] tra [số tiền] [nội dung]` | Trả nợ (tên trước) | `bao tra 50k` |
 
 **💡 Mẹo ghi nợ nhanh:**
-- Gõ không dấu: `@Tuan` = `@Tuấn` = `@tuan`
-- Dùng số thứ tự: `no 50k @1 tiền cơm` (thay `@1` = bạn số 1 trong danh sách)
+- Gõ không dấu: `Tuan` = `Tuấn` = `tuan`
+- Không cần `@`: `no bao 50k` thay vì `no @Bao 50k`
+- Tên trước hay lệnh trước đều được: `bao no 50k` = `no bao 50k`
+- Dùng số thứ tự: `no 50k @1 tiền cơm` (bạn số 1 trong danh sách)
 - Nếu gõ sai tên, bot sẽ hiện danh sách để bạn chọn
 
 ### 📊 Xem nợ
@@ -248,6 +252,15 @@ Render free tier sẽ ngủ sau 15 phút. Dùng [cron-job.org](https://cron-job.
 - Mã kết nối bạn bè hết hạn sau 24h
 
 ## 📝 Changelog
+
+### v2.3 (2024-12-23)
+- ✨ **Flexible Input**: Gõ tự nhiên không cần @
+  - `tuan anh no 50k tien com` (tên trước)
+  - `no tuan anh 50k tien com` (lệnh trước, tên giữa)
+  - `tra bao 50k` (trả nợ linh hoạt)
+- ✨ **Accent-insensitive matching**: `tuan` = `Tuấn`
+- ✨ **Multi-word names**: Hỗ trợ tên có nhiều từ (Tuấn Anh, Minh Đức...)
+- 🔧 Giữ nguyên backward compatibility với format cũ (@mention)
 
 ### v2.2 (2024-12-23)
 - ✨ **Auto-alias**: Tự động đặt tên từ Facebook khi chat lần đầu

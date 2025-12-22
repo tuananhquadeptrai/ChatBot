@@ -793,7 +793,7 @@ function formatAmount(amount) {
   return amount.toLocaleString('vi-VN');
 }
 
-function parseCommand(text) {
+function parseCommandSync(text) {
   if (!text) return null;
   
   const normalizedText = text.trim().toLowerCase();
@@ -856,9 +856,9 @@ function parseCommand(text) {
     return { intent: 'MY_ID' };
   }
   
-  // ============ EXISTING COMMANDS ============
+  // ============ EXISTING COMMANDS (Legacy format với @) ============
   
-  // Regex cho lệnh GHI NỢ: "no", "nợ"
+  // Regex cho lệnh GHI NỢ: "no 50k @Bao tiền cơm" (format cũ)
   const debtRegex = /^(no|nợ)\s+(\S+)\s*(.*)$/i;
   const debtMatch = text.match(debtRegex);
   
@@ -875,7 +875,7 @@ function parseCommand(text) {
     }
   }
   
-  // Regex cho lệnh TRẢ NỢ: "tra", "trả"
+  // Regex cho lệnh TRẢ NỢ: "tra 50k @Bao tiền cơm" (format cũ)
   const paidRegex = /^(tra|trả)\s+(\S+)\s*(.*)$/i;
   const paidMatch = text.match(paidRegex);
   
@@ -893,7 +893,7 @@ function parseCommand(text) {
   }
   
   // Regex cho lệnh XEM NỢ
-  const checkRegex = /^(check|tong|tổng|show\s*no|xem\s*no|xem\s*nợ)\s*(conno|còn\s*nợ|@\S+)?$/i;
+  const checkRegex = /^(check|tong|tổng|show\s*no|xem\s*no|xem\s*nợ)\s*(conno|còn\s*nợ|@?\S+)?$/i;
   const checkMatch = normalizedText.match(checkRegex);
   if (checkMatch) {
     let debtor = null;
@@ -937,6 +937,20 @@ function parseCommand(text) {
   return null;
 }
 
+async function parseCommand(userId, text) {
+  const syncResult = parseCommandSync(text);
+  if (syncResult) {
+    return syncResult;
+  }
+  
+  const flexibleResult = await parseFlexibleDebtOrPaid(userId, text);
+  if (flexibleResult) {
+    return flexibleResult;
+  }
+  
+  return null;
+}
+
 function parseDebtorAndContent(remainder) {
   if (!remainder) {
     return { debtor: null, content: '' };
@@ -952,6 +966,151 @@ function parseDebtorAndContent(remainder) {
   }
   
   return { debtor: null, content: trimmed };
+}
+
+// ============================================
+// FLEXIBLE COMMAND PARSING - PHÂN TÍCH LINH HOẠT
+// ============================================
+
+function isDebtWord(token) {
+  const n = normalizeVietnamese(token);
+  return n === 'no';
+}
+
+function isPaidWord(token) {
+  const n = normalizeVietnamese(token);
+  return n === 'tra';
+}
+
+function findFirstAmountIndex(tokens, startIndex = 0) {
+  for (let i = startIndex; i < tokens.length; i++) {
+    if (parseAmount(tokens[i])) return i;
+  }
+  return -1;
+}
+
+function detectFriendInSpan(tokens, start, end, friendNameEntries) {
+  if (start > end || start < 0 || end >= tokens.length) return null;
+  
+  const spanText = tokens.slice(start, end + 1).join(' ');
+  const spanNormalized = normalizeVietnamese(spanText);
+  
+  const matches = friendNameEntries.filter(
+    entry => entry.normalizedName === spanNormalized
+  );
+  
+  if (matches.length === 1) {
+    return {
+      friendUserId: matches[0].friendUserId,
+      alias: matches[0].rawName
+    };
+  }
+  
+  if (matches.length > 1) {
+    return {
+      ambiguous: true,
+      candidates: matches
+    };
+  }
+  
+  return null;
+}
+
+function buildFriendNameEntries(friends) {
+  const entries = [];
+  for (const friend of friends) {
+    if (friend.alias) {
+      entries.push({
+        friendUserId: friend.userId,
+        rawName: friend.alias,
+        normalizedName: normalizeVietnamese(friend.alias),
+        tokenCount: friend.alias.trim().split(/\s+/).length
+      });
+    }
+  }
+  entries.sort((a, b) => b.tokenCount - a.tokenCount);
+  return entries;
+}
+
+function tryMatchFriendInTokens(tokens, start, end, friendNameEntries) {
+  for (let len = end - start + 1; len >= 1; len--) {
+    for (let i = start; i <= end - len + 1; i++) {
+      const match = detectFriendInSpan(tokens, i, i + len - 1, friendNameEntries);
+      if (match && !match.ambiguous) {
+        return {
+          match,
+          startIdx: i,
+          endIdx: i + len - 1
+        };
+      }
+    }
+  }
+  return null;
+}
+
+async function parseFlexibleDebtOrPaid(userId, text) {
+  const trimmedText = text.trim();
+  const tokens = trimmedText.split(/\s+/);
+  
+  if (tokens.length < 2) return null;
+  
+  const friends = await getLinkedFriends(userId);
+  const friendNameEntries = buildFriendNameEntries(friends);
+  
+  let commandIndex = -1;
+  let commandType = null;
+  
+  for (let i = 0; i < tokens.length; i++) {
+    if (isDebtWord(tokens[i])) {
+      commandIndex = i;
+      commandType = 'DEBT';
+      break;
+    }
+    if (isPaidWord(tokens[i])) {
+      commandIndex = i;
+      commandType = 'PAID';
+      break;
+    }
+  }
+  
+  if (commandIndex === -1) return null;
+  
+  const amountIndex = findFirstAmountIndex(tokens, commandIndex + 1);
+  if (amountIndex === -1) return null;
+  
+  const amount = parseAmount(tokens[amountIndex]);
+  if (!amount) return null;
+  
+  let debtor = null;
+  let contentStart = amountIndex + 1;
+  
+  if (commandIndex === 0 && amountIndex > 1) {
+    const friendMatch = tryMatchFriendInTokens(tokens, 1, amountIndex - 1, friendNameEntries);
+    if (friendMatch) {
+      debtor = friendMatch.match.alias;
+    } else {
+      const possibleName = tokens.slice(1, amountIndex).join(' ');
+      debtor = possibleName;
+    }
+  } else if (commandIndex > 0) {
+    const friendMatch = tryMatchFriendInTokens(tokens, 0, commandIndex - 1, friendNameEntries);
+    if (friendMatch) {
+      debtor = friendMatch.match.alias;
+    } else {
+      const possibleName = tokens.slice(0, commandIndex).join(' ');
+      debtor = possibleName;
+    }
+  }
+  
+  const contentTokens = tokens.slice(contentStart);
+  const content = contentTokens.join(' ').trim();
+  
+  return {
+    intent: commandType,
+    amount,
+    debtor: debtor,
+    content: content || 'Không có nội dung'
+  };
 }
 
 // ============================================
@@ -1581,12 +1740,15 @@ function handleHelp() {
 ━━━━━━━━━━━━━━━━━━━━
 📝 GHI NỢ:
 • no 50k @A tiền cơm
+• no tuan 50k tiền cơm
+• tuan no 50k tiền cơm
 • nợ 1tr @1 mua đồ (dùng số)
 
 ━━━━━━━━━━━━━━━━━━━━
 💵 TRẢ NỢ:
 • tra 20k @A
-• trả 500k @2 (dùng số)
+• tra bao 50k lương về
+• bao tra 50k
 
 ━━━━━━━━━━━━━━━━━━━━
 📊 XEM NỢ:
@@ -1609,9 +1771,9 @@ function handleHelp() {
 
 ━━━━━━━━━━━━━━━━━━━━
 💡 MẸO:
-• Có thể gõ không dấu: @Tuan = @Tuấn
-• Dùng @1, @2... thay cho tên
-• Nếu gõ sai tên, bot sẽ gợi ý`;
+• Gõ tự nhiên: tuan no 50k cơm
+• Không cần @: no bao 50k
+• Dùng @1, @2... thay cho tên`;
 }
 
 // ============================================
@@ -1631,7 +1793,7 @@ async function handleMessage(userId, messageText) {
       );
     }
     
-    const command = parseCommand(messageText);
+    const command = await parseCommand(userId, messageText);
     
     if (!command) {
       await sendMessage(userId, '❓ Không hiểu lệnh. Gõ "help" để xem hướng dẫn.');
@@ -1997,8 +2159,8 @@ app.post('/webhook', async (req, res) => {
 // ============================================
 app.listen(config.PORT, () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🚀 Facebook Debt Tracker Bot v2.2');
-  console.log('✨ Tính năng mới: Auto-alias, Semi-auto link');
+  console.log('🚀 Facebook Debt Tracker Bot v2.3');
+  console.log('✨ Tính năng mới: Flexible Input (gõ tự nhiên)');
   console.log(`📡 Server đang chạy tại port ${config.PORT}`);
   console.log(`📊 Google Sheet ID: ${config.GOOGLE_SHEET_ID.substring(0, 10)}...`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
