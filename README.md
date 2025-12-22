@@ -1,8 +1,8 @@
-# 📱 Facebook Messenger Debt Tracker Bot v2.1
+# 📱 Facebook Messenger Debt Tracker Bot v2.2
 
 Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets làm database.
 
-**✨ Tính năng mới v2.1: Gõ @mention thông minh** - Không cần gõ đúng dấu!
+**✨ Tính năng mới v2.2: Zero-config onboarding** - Không cần setup thủ công!
 
 ## 🚀 Tính năng
 
@@ -29,22 +29,23 @@ Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets
 | `check conno` | Chỉ xem người còn nợ |
 | `pending` | Xem nợ chờ xác nhận |
 
-### 🔗 Liên kết bạn bè (Mới v2.0)
+### 🔗 Liên kết bạn bè
 
 | Lệnh | Mô tả |
 |------|-------|
-| `alias @TenBan` | Đặt tên hiển thị cho mình |
-| `sharecode` | Tạo mã kết nối (hết hạn 24h) |
-| `link ABC123 @Bao` | Liên kết với bạn bè |
+| `alias @TenBan` | Đổi tên hiển thị (tự động đặt từ Facebook) |
+| `sharecode` | Tạo mã kết nối thủ công (hết hạn 24h) |
+| `link ABC123 @Bao` | Liên kết với bạn bè bằng mã |
 | `friends` | Xem danh sách bạn đã liên kết |
 | `id` | Xem ID và alias của mình |
 
-### ✅ Xác nhận nợ (Mới v2.0)
+### ✅ Xác nhận nợ
 
-| Lệnh | Mô tả |
-|------|-------|
-| `ok ABC123` | Xác nhận khoản nợ |
-| `huy ABC123` | Từ chối khoản nợ |
+Khi nhận thông báo nợ, bạn sẽ thấy **2 nút bấm**:
+- `✅ Xác nhận` - Đồng ý khoản nợ
+- `❌ Từ chối` - Không đồng ý
+
+Hoặc gõ lệnh: `ok ABC123` / `huy ABC123`
 
 ### 🔧 Tiện ích khác
 
@@ -67,32 +68,57 @@ Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets
 | `1.5m` | 1,500,000đ |
 | `50k5` | 50,500đ |
 
-## 🔄 Workflow Đồng bộ 2 chiều
+## 🔄 Workflow Đồng bộ 2 chiều (v2.2 - Đơn giản hóa!)
+
+### Cách mới (v2.2) - Tự động liên kết
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  1. Cả 2 người đặt alias                                    │
-│     A: alias @Tuan                                          │
-│     B: alias @Bao                                           │
+│  1. Cả 2 người chat với bot lần đầu                         │
+│     Bot tự động đặt alias từ tên Facebook                   │
+│     → A được đặt tên @Tuan                                  │
+│     → B được đặt tên @Bao                                   │
 ├─────────────────────────────────────────────────────────────┤
-│  2. Người B tạo mã kết nối                                  │
-│     B: sharecode                                            │
-│     Bot: 🔗 MÃ KẾT NỐI: ABC123                              │
-├─────────────────────────────────────────────────────────────┤
-│  3. Người A liên kết                                        │
-│     A: link ABC123 @Bao                                     │
-│     Bot: ✅ Đã liên kết với @Bao!                           │
-├─────────────────────────────────────────────────────────────┤
-│  4. Khi A ghi nợ @Bao                                       │
+│  2. A ghi nợ @Bao (chưa liên kết)                           │
 │     A: no 50k @Bao tiền cơm                                 │
-│     Bot → A: ⏳ Chờ @Bao xác nhận                           │
-│     Bot → B: 📥 NỢ MỚI TỪ @Tuan: 50k. Mã: XYZ789           │
+│     Bot: 🔍 Tìm thấy @Bao (Nguyễn Văn Bảo)                  │
+│          Bạn muốn liên kết và ghi nợ?                       │
+│          [✅ Đúng, liên kết]  [❌ Không phải]                │
 ├─────────────────────────────────────────────────────────────┤
-│  5. Người B xác nhận hoặc từ chối                           │
-│     B: ok XYZ789                                            │
+│  3. A bấm "Đúng, liên kết"                                  │
+│     Bot: ✅ Đã liên kết với @Bao!                           │
+│     Bot: ⏳ Đã gửi yêu cầu xác nhận đến @Bao                │
+├─────────────────────────────────────────────────────────────┤
+│  4. B nhận thông báo với nút bấm                            │
+│     Bot → B: 📥 NỢ MỚI TỪ @Tuan                             │
+│              💰 50,000đ - tiền cơm                          │
+│              [✅ Xác nhận]  [❌ Từ chối]                     │
+├─────────────────────────────────────────────────────────────┤
+│  5. B bấm "Xác nhận"                                        │
 │     Bot → A: ✅ @Bao đã xác nhận!                           │
 │     Bot → B: ✅ Đã xác nhận nợ 50k                          │
 └─────────────────────────────────────────────────────────────┘
+```
+
+### Cách cũ (v2.0) - Liên kết thủ công bằng sharecode
+
+Vẫn hoạt động nếu muốn liên kết trước:
+1. B: `sharecode` → nhận mã ABC123
+2. A: `link ABC123 @Bao`
+3. Bắt đầu ghi nợ
+
+### Xử lý trùng tên
+
+Nếu có nhiều người cùng tên "Bao":
+```
+A: no 50k @Bao tiền cơm
+
+Bot: 🔍 Tìm thấy 2 người tên "Bao":
+     1) @Bao - Nguyễn Văn Bảo
+     2) @Bao2 - Trần Minh Bảo
+     
+     👇 Chọn đúng người:
+     [@Bao]  [@Bao2]
 ```
 
 ## 📋 Yêu cầu
@@ -199,9 +225,9 @@ Render free tier sẽ ngủ sau 15 phút. Dùng [cron-job.org](https://cron-job.
 
 ### Sheet 3: FriendLinks
 
-| UserID_A | UserID_B | AliasOfBForA | Status | Code | CreatedAt |
-|----------|----------|--------------|--------|------|-----------|
-| 123456 | 789012 | Bao | ACTIVE | ABC123 | 2024-12-22 |
+| UserID_A | UserID_B | AliasOfBForA | AliasOfAForB | Status | Code | CreatedAt |
+|----------|----------|--------------|--------------|--------|------|-----------|
+| 123456 | 789012 | Bao | Tuan | ACTIVE | AUTO | 2024-12-23 |
 
 ## 📁 Cấu trúc project
 
@@ -222,6 +248,13 @@ Render free tier sẽ ngủ sau 15 phút. Dùng [cron-job.org](https://cron-job.
 - Mã kết nối bạn bè hết hạn sau 24h
 
 ## 📝 Changelog
+
+### v2.2 (2024-12-23)
+- ✨ **Auto-alias**: Tự động đặt tên từ Facebook khi chat lần đầu
+- ✨ **Semi-auto link**: Ghi nợ người lạ → bot gợi ý liên kết (không cần sharecode)
+- ✨ **Xác nhận bằng nút bấm**: Nhận nợ có nút [✅ Xác nhận] [❌ Từ chối]
+- ✨ **Xử lý trùng tên**: Nếu có nhiều người cùng tên, bot hiện danh sách chọn
+- 🔧 Giảm 80% thao tác onboarding
 
 ### v2.1 (2024-12-23)
 - ✨ **@mention thông minh**: Gõ không cần dấu (`@Tuan` = `@Tuấn`)
