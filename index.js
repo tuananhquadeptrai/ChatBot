@@ -62,6 +62,20 @@ function generateCode(length = 6) {
   return crypto.randomBytes(4).toString('hex').toUpperCase().substring(0, length);
 }
 
+/**
+ * Chuẩn hóa chuỗi tiếng Việt - bỏ dấu, lowercase
+ * Cho phép matching: "Tuấn" = "Tuan" = "tuan"
+ */
+function normalizeVietnamese(str = '') {
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'd')
+    .replace(/[^a-z0-9]/g, '');
+}
+
 // ============================================
 // GOOGLE SHEETS REPOSITORY
 // ============================================
@@ -155,8 +169,12 @@ async function setAlias(userId, alias) {
     const sheet = await getAliasesSheet(doc);
     const rows = await sheet.getRows();
     
-    // Kiểm tra alias đã tồn tại chưa
-    const existingAlias = rows.find(r => r.get('Alias')?.toLowerCase() === alias.toLowerCase());
+    // Kiểm tra alias đã tồn tại chưa (accent-insensitive)
+    const inputNorm = normalizeVietnamese(alias);
+    const existingAlias = rows.find(r => {
+      const existing = r.get('Alias');
+      return existing && normalizeVietnamese(existing) === inputNorm;
+    });
     if (existingAlias && existingAlias.get('UserID') !== userId) {
       return { success: false, message: `Alias @${alias} đã được sử dụng bởi người khác.` };
     }
@@ -202,7 +220,12 @@ async function getUserIdByAlias(alias) {
     const sheet = await getAliasesSheet(doc);
     const rows = await sheet.getRows();
     
-    const row = rows.find(r => r.get('Alias')?.toLowerCase() === alias.toLowerCase());
+    // Accent-insensitive matching
+    const inputNorm = normalizeVietnamese(alias);
+    const row = rows.find(r => {
+      const existing = r.get('Alias');
+      return existing && normalizeVietnamese(existing) === inputNorm;
+    });
     return row ? row.get('UserID') : null;
   } catch (error) {
     console.error('❌ Lỗi getUserIdByAlias:', error.message);
@@ -305,16 +328,22 @@ async function getFriendUserId(userId, friendAlias) {
     const sheet = await getFriendLinksSheet(doc);
     const rows = await sheet.getRows();
     
+    // Accent-insensitive matching
+    const inputNorm = normalizeVietnamese(friendAlias);
+    
     // Tìm trong FriendLinks trước
     for (const row of rows) {
       if (row.get('Status') !== 'ACTIVE') continue;
       
+      const aliasOfBForA = row.get('AliasOfBForA');
+      const aliasOfAForB = row.get('AliasOfAForB');
+      
       if (row.get('UserID_A') === userId && 
-          row.get('AliasOfBForA')?.toLowerCase() === friendAlias.toLowerCase()) {
+          aliasOfBForA && normalizeVietnamese(aliasOfBForA) === inputNorm) {
         return row.get('UserID_B');
       }
       if (row.get('UserID_B') === userId && 
-          row.get('AliasOfAForB')?.toLowerCase() === friendAlias.toLowerCase()) {
+          aliasOfAForB && normalizeVietnamese(aliasOfAForB) === inputNorm) {
         return row.get('UserID_A');
       }
     }
@@ -512,6 +541,23 @@ async function sendMessage(recipientId, messageText) {
       message: { text: messageText },
     });
     console.log(`📤 Đã gửi tin nhắn đến ${recipientId}`);
+  } catch (error) {
+    console.error('❌ Lỗi gửi tin nhắn:', error.response?.data || error.message);
+  }
+}
+
+async function sendMessageWithQuickReplies(recipientId, messageText, quickReplies) {
+  const url = `https://graph.facebook.com/v18.0/me/messages?access_token=${config.PAGE_ACCESS_TOKEN}`;
+  
+  try {
+    await axios.post(url, {
+      recipient: { id: recipientId },
+      message: { 
+        text: messageText,
+        quick_replies: quickReplies
+      },
+    });
+    console.log(`📤 Đã gửi tin nhắn với quick replies đến ${recipientId}`);
   } catch (error) {
     console.error('❌ Lỗi gửi tin nhắn:', error.response?.data || error.message);
   }
@@ -771,10 +817,40 @@ async function handleAddDebt(userId, amount, debtor, content) {
   let debtorUserId = '';
   let status = 'CONFIRMED';
   let debtCode = '';
+  let resolvedDebtor = debtor;
   
   // Nếu có @mention, thử tìm userId của người đó
   if (debtor) {
-    debtorUserId = await getFriendUserId(userId, debtor);
+    // Kiểm tra nếu là số (@1, @2...) thì resolve từ friend list
+    if (/^\d+$/.test(debtor)) {
+      const aliasFromIndex = await getFriendAliasByIndex(userId, parseInt(debtor));
+      if (aliasFromIndex) {
+        resolvedDebtor = aliasFromIndex;
+      } else {
+        return { 
+          ok: false, 
+          reason: 'INVALID_INDEX',
+          message: `❌ Không có bạn số @${debtor}. Gõ "friends" để xem danh sách.`
+        };
+      }
+    }
+    
+    debtorUserId = await getFriendUserId(userId, resolvedDebtor);
+    
+    // Nếu không tìm thấy và không phải là số -> có thể user gõ sai
+    if (!debtorUserId && !/^\d+$/.test(debtor)) {
+      const friends = await getLinkedFriends(userId);
+      if (friends.length > 0) {
+        return {
+          ok: false,
+          reason: 'UNKNOWN_DEBTOR',
+          debtorAlias: debtor,
+          amount,
+          content,
+          commandType: 'DEBT'
+        };
+      }
+    }
     
     // Nếu tìm thấy userId của debtor -> tạo PENDING debt
     if (debtorUserId) {
@@ -786,7 +862,7 @@ async function handleAddDebt(userId, amount, debtor, content) {
   const rowData = {
     Date: new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
     UserID: userId,
-    Debtor: debtor || 'Chung',
+    Debtor: resolvedDebtor || 'Chung',
     Type: 'DEBT',
     Amount: amount,
     Content: content,
@@ -797,7 +873,7 @@ async function handleAddDebt(userId, amount, debtor, content) {
   
   await appendRow(rowData);
   
-  const debtorLabel = debtor ? `@${debtor}` : 'Chung';
+  const debtorLabel = resolvedDebtor ? `@${resolvedDebtor}` : 'Chung';
   
   // Nếu có PENDING debt, thông báo cho người nợ
   if (status === 'PENDING' && debtorUserId) {
@@ -813,7 +889,7 @@ async function handleAddDebt(userId, amount, debtor, content) {
       `• huy ${debtCode} - Từ chối`
     );
     
-    return `⏳ Đã gửi yêu cầu xác nhận đến @${debtor}\n` +
+    return `⏳ Đã gửi yêu cầu xác nhận đến ${debtorLabel}\n` +
            `💰 Số tiền: ${formatAmount(amount)}đ\n` +
            `🔑 Mã: ${debtCode}`;
   }
@@ -825,9 +901,39 @@ async function handleRepayDebt(userId, amount, debtor, content) {
   let debtorUserId = '';
   let status = 'CONFIRMED';
   let debtCode = '';
+  let resolvedDebtor = debtor;
   
   if (debtor) {
-    debtorUserId = await getFriendUserId(userId, debtor);
+    // Kiểm tra nếu là số (@1, @2...) thì resolve từ friend list
+    if (/^\d+$/.test(debtor)) {
+      const aliasFromIndex = await getFriendAliasByIndex(userId, parseInt(debtor));
+      if (aliasFromIndex) {
+        resolvedDebtor = aliasFromIndex;
+      } else {
+        return { 
+          ok: false, 
+          reason: 'INVALID_INDEX',
+          message: `❌ Không có bạn số @${debtor}. Gõ "friends" để xem danh sách.`
+        };
+      }
+    }
+    
+    debtorUserId = await getFriendUserId(userId, resolvedDebtor);
+    
+    // Nếu không tìm thấy và không phải là số -> có thể user gõ sai
+    if (!debtorUserId && !/^\d+$/.test(debtor)) {
+      const friends = await getLinkedFriends(userId);
+      if (friends.length > 0) {
+        return {
+          ok: false,
+          reason: 'UNKNOWN_DEBTOR',
+          debtorAlias: debtor,
+          amount,
+          content,
+          commandType: 'PAID'
+        };
+      }
+    }
     
     if (debtorUserId) {
       status = 'PENDING';
@@ -838,7 +944,7 @@ async function handleRepayDebt(userId, amount, debtor, content) {
   const rowData = {
     Date: new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }),
     UserID: userId,
-    Debtor: debtor || 'Chung',
+    Debtor: resolvedDebtor || 'Chung',
     Type: 'PAID',
     Amount: amount,
     Content: content,
@@ -849,7 +955,7 @@ async function handleRepayDebt(userId, amount, debtor, content) {
   
   await appendRow(rowData);
   
-  const debtorLabel = debtor ? `@${debtor}` : 'Chung';
+  const debtorLabel = resolvedDebtor ? `@${resolvedDebtor}` : 'Chung';
   
   if (status === 'PENDING' && debtorUserId) {
     const myAlias = await getAliasByUserId(userId);
@@ -864,7 +970,7 @@ async function handleRepayDebt(userId, amount, debtor, content) {
       `• huy ${debtCode} - Từ chối`
     );
     
-    return `⏳ Đã gửi yêu cầu xác nhận đến @${debtor}\n` +
+    return `⏳ Đã gửi yêu cầu xác nhận đến ${debtorLabel}\n` +
            `💰 Số tiền: ${formatAmount(amount)}đ\n` +
            `🔑 Mã: ${debtCode}`;
   }
@@ -975,13 +1081,20 @@ async function handleListFriends(userId) {
     response += `2. Gõ: sharecode\n`;
     response += `3. Gửi mã cho bạn bè`;
   } else {
-    for (const friend of friends) {
-      response += `• @${friend.alias || 'Không tên'}\n`;
-    }
-    response += `\n💡 Gõ "sharecode" để thêm bạn mới`;
+    friends.forEach((friend, index) => {
+      response += `${index + 1}) @${friend.alias || 'Không tên'}\n`;
+    });
+    response += `\n💡 Mẹo: Dùng @1, @2... thay cho tên khi ghi nợ`;
   }
   
   return response;
+}
+
+async function getFriendAliasByIndex(userId, index1Based) {
+  const friends = await getLinkedFriends(userId);
+  const idx = index1Based - 1;
+  if (idx < 0 || idx >= friends.length) return null;
+  return friends[idx].alias || null;
 }
 
 async function handleMyId(userId) {
@@ -1005,7 +1118,7 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
   }
   
   const filteredRows = filterDebtor 
-    ? myRows.filter(r => r.Debtor.toLowerCase() === filterDebtor.toLowerCase())
+    ? myRows.filter(r => normalizeVietnamese(r.Debtor) === normalizeVietnamese(filterDebtor))
     : myRows;
   
   if (filterDebtor && filteredRows.length === 0) {
@@ -1207,12 +1320,12 @@ function handleHelp() {
 ━━━━━━━━━━━━━━━━━━━━
 📝 GHI NỢ:
 • no 50k @A tiền cơm
-• nợ 1tr @B mua đồ
+• nợ 1tr @1 mua đồ (dùng số)
 
 ━━━━━━━━━━━━━━━━━━━━
 💵 TRẢ NỢ:
 • tra 20k @A
-• trả 500k @B
+• trả 500k @2 (dùng số)
 
 ━━━━━━━━━━━━━━━━━━━━
 📊 XEM NỢ:
@@ -1234,10 +1347,10 @@ function handleHelp() {
 • huy MACODE - từ chối
 
 ━━━━━━━━━━━━━━━━━━━━
-🔧 KHÁC:
-• xoa - xóa giao dịch cuối
-• tim [từ] - tìm kiếm
-• thang nay - thống kê`;
+💡 MẸO:
+• Có thể gõ không dấu: @Tuan = @Tuấn
+• Dùng @1, @2... thay cho tên
+• Nếu gõ sai tên, bot sẽ gợi ý`;
 }
 
 // ============================================
@@ -1292,10 +1405,62 @@ async function handleMessage(userId, messageText) {
         
       case 'DEBT':
         response = await handleAddDebt(userId, command.amount, command.debtor, command.content);
+        // Xử lý quick reply fallback khi không tìm thấy alias
+        if (typeof response === 'object' && !response.ok) {
+          if (response.reason === 'UNKNOWN_DEBTOR') {
+            const friends = await getLinkedFriends(userId);
+            const quickReplies = friends.slice(0, 11).map((friend, index) => ({
+              content_type: 'text',
+              title: `@${friend.alias}`,
+              payload: JSON.stringify({
+                type: 'QUICK_REPLY_DEBT',
+                amount: response.amount,
+                content: response.content,
+                chosenAlias: friend.alias,
+                commandType: response.commandType
+              })
+            }));
+            await sendMessageWithQuickReplies(
+              userId,
+              `❌ Không tìm thấy "@${response.debtorAlias}".\n👉 Chọn một người trong danh sách:`,
+              quickReplies
+            );
+            return;
+          } else if (response.reason === 'INVALID_INDEX') {
+            await sendMessage(userId, response.message);
+            return;
+          }
+        }
         break;
         
       case 'PAID':
         response = await handleRepayDebt(userId, command.amount, command.debtor, command.content);
+        // Xử lý quick reply fallback khi không tìm thấy alias
+        if (typeof response === 'object' && !response.ok) {
+          if (response.reason === 'UNKNOWN_DEBTOR') {
+            const friends = await getLinkedFriends(userId);
+            const quickReplies = friends.slice(0, 11).map((friend, index) => ({
+              content_type: 'text',
+              title: `@${friend.alias}`,
+              payload: JSON.stringify({
+                type: 'QUICK_REPLY_DEBT',
+                amount: response.amount,
+                content: response.content,
+                chosenAlias: friend.alias,
+                commandType: response.commandType
+              })
+            }));
+            await sendMessageWithQuickReplies(
+              userId,
+              `❌ Không tìm thấy "@${response.debtorAlias}".\n👉 Chọn một người trong danh sách:`,
+              quickReplies
+            );
+            return;
+          } else if (response.reason === 'INVALID_INDEX') {
+            await sendMessage(userId, response.message);
+            return;
+          }
+        }
         break;
         
       case 'CHECK':
@@ -1376,6 +1541,27 @@ app.post('/webhook', async (req, res) => {
           continue;
         }
         
+        // Xử lý Quick Reply payload
+        if (event.message.quick_reply && event.message.quick_reply.payload) {
+          try {
+            const payload = JSON.parse(event.message.quick_reply.payload);
+            if (payload.type === 'QUICK_REPLY_DEBT') {
+              const { amount, content, chosenAlias, commandType } = payload;
+              let result;
+              if (commandType === 'DEBT') {
+                result = await handleAddDebt(senderId, amount, chosenAlias, content);
+              } else {
+                result = await handleRepayDebt(senderId, amount, chosenAlias, content);
+              }
+              const text = typeof result === 'string' ? result : result.message;
+              await sendMessage(senderId, text);
+              continue;
+            }
+          } catch (err) {
+            console.error('❌ Lỗi xử lý quick reply:', err);
+          }
+        }
+        
         handleMessage(senderId, messageText).catch(err => {
           console.error('❌ Lỗi xử lý message:', err);
         });
@@ -1389,8 +1575,8 @@ app.post('/webhook', async (req, res) => {
 // ============================================
 app.listen(config.PORT, () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🚀 Facebook Debt Tracker Bot v2.0');
-  console.log('✨ Tính năng mới: Đồng bộ 2 chiều');
+  console.log('🚀 Facebook Debt Tracker Bot v2.1');
+  console.log('✨ Tính năng mới: @mention thông minh');
   console.log(`📡 Server đang chạy tại port ${config.PORT}`);
   console.log(`📊 Google Sheet ID: ${config.GOOGLE_SHEET_ID.substring(0, 10)}...`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');

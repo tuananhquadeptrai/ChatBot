@@ -1,8 +1,8 @@
-# 📱 Facebook Messenger Debt Tracker Bot v2.0
+# 📱 Facebook Messenger Debt Tracker Bot v2.1
 
 Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets làm database.
 
-**✨ Tính năng mới v2.0: Đồng bộ 2 chiều** - Xác nhận nợ giữa 2 người!
+**✨ Tính năng mới v2.1: Gõ @mention thông minh** - Không cần gõ đúng dấu!
 
 ## 🚀 Tính năng
 
@@ -14,6 +14,11 @@ Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets
 | `nợ [số tiền] @[người] [nội dung]` | Ghi nợ (có dấu) | `nợ 100k @An mua đồ` |
 | `tra [số tiền] @[người] [nội dung]` | Trả nợ | `tra 20k @Bao` |
 | `trả [số tiền] @[người] [nội dung]` | Trả nợ (có dấu) | `trả 500k @An lương về` |
+
+**💡 Mẹo ghi nợ nhanh:**
+- Gõ không dấu: `@Tuan` = `@Tuấn` = `@tuan`
+- Dùng số thứ tự: `no 50k @1 tiền cơm` (thay `@1` = bạn số 1 trong danh sách)
+- Nếu gõ sai tên, bot sẽ hiện danh sách để bạn chọn
 
 ### 📊 Xem nợ
 
@@ -217,6 +222,12 @@ Render free tier sẽ ngủ sau 15 phút. Dùng [cron-job.org](https://cron-job.
 - Mã kết nối bạn bè hết hạn sau 24h
 
 ## 📝 Changelog
+
+### v2.1 (2024-12-23)
+- ✨ **@mention thông minh**: Gõ không cần dấu (`@Tuan` = `@Tuấn`)
+- ✨ **Shortcut @1, @2**: Dùng số thứ tự thay cho tên bạn bè
+- ✨ **Quick Reply**: Nếu gõ sai tên, bot hiện danh sách để chọn
+- 🔧 Cải thiện trải nghiệm gõ trên mobile
 
 ### v2.0 (2024-12-23)
 - ✨ Thêm tính năng đồng bộ 2 chiều
