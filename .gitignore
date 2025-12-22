@@ -1,0 +1,35 @@
+# Gitignore for Facebook Debt Tracker Bot
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Google credentials (if stored as file)
+*.json
+!package.json
+!package-lock.json
+
+# Build output
+dist/
+build/

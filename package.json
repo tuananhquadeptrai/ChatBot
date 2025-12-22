@@ -1,0 +1,31 @@
+{
+  "name": "facebook-debt-tracker-bot",
+  "version": "1.0.0",
+  "description": "Facebook Messenger Bot để theo dõi nợ cá nhân sử dụng Google Sheets",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [
+    "facebook",
+    "messenger",
+    "bot",
+    "debt",
+    "tracker",
+    "google-sheets"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "body-parser": "^1.20.2",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "google-spreadsheet": "^4.1.1",
+    "google-auth-library": "^9.4.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
