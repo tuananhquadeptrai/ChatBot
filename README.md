@@ -1,22 +1,94 @@
-# 📱 Facebook Messenger Debt Tracker Bot
+# 📱 Facebook Messenger Debt Tracker Bot v2.0
 
 Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets làm database.
 
+**✨ Tính năng mới v2.0: Đồng bộ 2 chiều** - Xác nhận nợ giữa 2 người!
+
 ## 🚀 Tính năng
+
+### 📝 Ghi nợ / Trả nợ
 
 | Lệnh | Mô tả | Ví dụ |
 |------|-------|-------|
-| `no [số tiền] [nội dung]` | Ghi nợ mới | `no 50k tiền cơm` |
-| `nợ [số tiền] [nội dung]` | Ghi nợ mới (có dấu) | `nợ 100k mua đồ` |
-| `tra [số tiền] [nội dung]` | Trả nợ | `tra 20k` |
-| `trả [số tiền] [nội dung]` | Trả nợ (có dấu) | `trả 500k lương về` |
-| `check` / `tong` / `show no` | Xem tổng nợ | `check` |
-| `help` | Xem hướng dẫn | `help` |
+| `no [số tiền] @[người] [nội dung]` | Ghi nợ | `no 50k @Bao tiền cơm` |
+| `nợ [số tiền] @[người] [nội dung]` | Ghi nợ (có dấu) | `nợ 100k @An mua đồ` |
+| `tra [số tiền] @[người] [nội dung]` | Trả nợ | `tra 20k @Bao` |
+| `trả [số tiền] @[người] [nội dung]` | Trả nợ (có dấu) | `trả 500k @An lương về` |
+
+### 📊 Xem nợ
+
+| Lệnh | Mô tả |
+|------|-------|
+| `check` | Xem tổng hợp tất cả |
+| `check @Bao` | Xem chi tiết với @Bao |
+| `check conno` | Chỉ xem người còn nợ |
+| `pending` | Xem nợ chờ xác nhận |
+
+### 🔗 Liên kết bạn bè (Mới v2.0)
+
+| Lệnh | Mô tả |
+|------|-------|
+| `alias @TenBan` | Đặt tên hiển thị cho mình |
+| `sharecode` | Tạo mã kết nối (hết hạn 24h) |
+| `link ABC123 @Bao` | Liên kết với bạn bè |
+| `friends` | Xem danh sách bạn đã liên kết |
+| `id` | Xem ID và alias của mình |
+
+### ✅ Xác nhận nợ (Mới v2.0)
+
+| Lệnh | Mô tả |
+|------|-------|
+| `ok ABC123` | Xác nhận khoản nợ |
+| `huy ABC123` | Từ chối khoản nợ |
+
+### 🔧 Tiện ích khác
+
+| Lệnh | Mô tả |
+|------|-------|
+| `xoa` | Xóa giao dịch gần nhất |
+| `tim [từ khóa]` | Tìm kiếm giao dịch |
+| `thang nay` | Thống kê tháng này |
+| `tuan nay` | Thống kê tuần này |
+| `help` | Xem hướng dẫn |
 
 ### 💰 Format số tiền
-- `50k` → 50,000đ
-- `1m` → 1,000,000đ
-- `1.5m` → 1,500,000đ
+
+| Viết | Giá trị |
+|------|---------|
+| `50k` | 50,000đ |
+| `100K` | 100,000đ |
+| `1m` | 1,000,000đ |
+| `1tr` | 1,000,000đ |
+| `1.5m` | 1,500,000đ |
+| `50k5` | 50,500đ |
+
+## 🔄 Workflow Đồng bộ 2 chiều
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. Cả 2 người đặt alias                                    │
+│     A: alias @Tuan                                          │
+│     B: alias @Bao                                           │
+├─────────────────────────────────────────────────────────────┤
+│  2. Người B tạo mã kết nối                                  │
+│     B: sharecode                                            │
+│     Bot: 🔗 MÃ KẾT NỐI: ABC123                              │
+├─────────────────────────────────────────────────────────────┤
+│  3. Người A liên kết                                        │
+│     A: link ABC123 @Bao                                     │
+│     Bot: ✅ Đã liên kết với @Bao!                           │
+├─────────────────────────────────────────────────────────────┤
+│  4. Khi A ghi nợ @Bao                                       │
+│     A: no 50k @Bao tiền cơm                                 │
+│     Bot → A: ⏳ Chờ @Bao xác nhận                           │
+│     Bot → B: 📥 NỢ MỚI TỪ @Tuan: 50k. Mã: XYZ789           │
+├─────────────────────────────────────────────────────────────┤
+│  5. Người B xác nhận hoặc từ chối                           │
+│     B: ok XYZ789                                            │
+│     Bot → A: ✅ @Bao đã xác nhận!                           │
+│     Bot → B: ✅ Đã xác nhận nợ 50k                          │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## 📋 Yêu cầu
 
@@ -30,6 +102,8 @@ Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets
 ### 1. Clone và cài dependencies
 
 ```bash
+git clone https://github.com/tuananhquadeptrai/ChatBot.git
+cd ChatBot
 npm install
 ```
 
@@ -37,8 +111,9 @@ npm install
 
 1. Tạo Google Sheet mới với header row:
    ```
-   Date | UserID | Type | Amount | Content
+   Date | UserID | Debtor | Type | Amount | Content | DebtorUserID | Status | DebtCode
    ```
+   *(Bot sẽ tự tạo các cột mới nếu thiếu)*
 
 2. Tạo Service Account tại [Google Cloud Console](https://console.cloud.google.com):
    - IAM & Admin → Service Accounts → Create
@@ -52,6 +127,7 @@ npm install
 2. Thêm product "Messenger"
 3. Tạo/Liên kết Facebook Page
 4. Lấy Page Access Token
+5. Đăng ký Webhook với events: `messages`
 
 ### 4. Cấu hình Environment Variables
 
@@ -59,6 +135,14 @@ npm install
 cp .env.example .env
 # Điền các giá trị vào file .env
 ```
+
+| Biến | Mô tả |
+|------|-------|
+| `PAGE_ACCESS_TOKEN` | Token từ Facebook Developer Console |
+| `VERIFY_TOKEN` | Token tự đặt để verify webhook |
+| `GOOGLE_SHEET_ID` | ID từ URL Google Sheet |
+| `GOOGLE_SERVICE_ACCOUNT_EMAIL` | Email từ Service Account JSON |
+| `GOOGLE_PRIVATE_KEY` | Private key từ Service Account JSON |
 
 ### 5. Chạy local
 
@@ -79,19 +163,40 @@ npm run dev  # với auto-reload
 5. Thêm Environment Variables
 6. Deploy
 
+### Giữ app thức với cron-job.org
+
+Render free tier sẽ ngủ sau 15 phút. Dùng [cron-job.org](https://cron-job.org):
+- URL: `https://your-app.onrender.com/`
+- Schedule: Every 14 minutes
+
 ### Đăng ký Webhook với Facebook
 
 1. Trên Facebook Developer Console → Messenger → Settings → Webhooks
 2. Callback URL: `https://your-app.onrender.com/webhook`
 3. Verify Token: Giống với `VERIFY_TOKEN` trong `.env`
-4. Subscribe các events: `messages`
+4. Subscribe events: `messages`
 
-## 📊 Cấu trúc Google Sheet
+## 📊 Cấu trúc Google Sheets
 
-| Date | UserID | Type | Amount | Content |
-|------|--------|------|--------|---------|
-| 22/12/2024, 10:30:00 | 123456789 | DEBT | 50000 | tiền cơm |
-| 22/12/2024, 14:00:00 | 123456789 | PAID | 20000 | trả bớt |
+### Sheet 1: Transactions (Mặc định)
+
+| Date | UserID | Debtor | Type | Amount | Content | DebtorUserID | Status | DebtCode |
+|------|--------|--------|------|--------|---------|--------------|--------|----------|
+| 22/12/2024, 10:30:00 | 123456 | Bao | DEBT | 50000 | tiền cơm | 789012 | PENDING | ABC123 |
+| 22/12/2024, 14:00:00 | 123456 | Chung | PAID | 20000 | trả bớt | | CONFIRMED | |
+
+### Sheet 2: Aliases
+
+| UserID | Alias | CreatedAt |
+|--------|-------|-----------|
+| 123456 | Tuan | 2024-12-22T10:00:00Z |
+| 789012 | Bao | 2024-12-22T10:05:00Z |
+
+### Sheet 3: FriendLinks
+
+| UserID_A | UserID_B | AliasOfBForA | Status | Code | CreatedAt |
+|----------|----------|--------------|--------|------|-----------|
+| 123456 | 789012 | Bao | ACTIVE | ABC123 | 2024-12-22 |
 
 ## 📁 Cấu trúc project
 
@@ -99,6 +204,7 @@ npm run dev  # với auto-reload
 ├── index.js          # Main application
 ├── package.json      # Dependencies
 ├── .env.example      # Environment template
+├── .gitignore        # Git ignore rules
 └── README.md         # Documentation
 ```
 
@@ -107,8 +213,24 @@ npm run dev  # với auto-reload
 - Không commit file `.env`
 - Sử dụng HTTPS (Render tự động cấp SSL)
 - Service Account chỉ có quyền truy cập Sheet được share
+- Chỉ người được tag mới có thể xác nhận/từ chối nợ
+- Mã kết nối bạn bè hết hạn sau 24h
+
+## 📝 Changelog
+
+### v2.0 (2024-12-23)
+- ✨ Thêm tính năng đồng bộ 2 chiều
+- ✨ Liên kết bạn bè với sharecode
+- ✨ Xác nhận/từ chối nợ
+- ✨ Chỉ tính nợ CONFIRMED vào tổng
+- 🔧 Tự động tạo sheet Aliases và FriendLinks
+
+### v1.0 (2024-12-22)
+- 🎉 Initial release
+- 📝 Ghi nợ, trả nợ
+- 📊 Xem tổng hợp, thống kê
+- 🔍 Tìm kiếm, xóa giao dịch
 
 ## 📝 License
 
 MIT
-# ChatBot
