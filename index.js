@@ -47,8 +47,10 @@ for (const envVar of requiredEnvVars) {
 // ============================================
 // KHỞI TẠO EXPRESS APP
 // ============================================
+const path = require('path');
 const app = express();
 app.use(bodyParser.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 // ============================================
 // GOOGLE SHEETS REPOSITORY
