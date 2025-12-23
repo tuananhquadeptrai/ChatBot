@@ -1177,55 +1177,15 @@ async function handleAddDebt(userId, amount, debtor, content) {
       }
     }
     
+    // Tìm trong friends trước
     debtorUserId = await getFriendUserId(userId, resolvedDebtor);
     
-    // Nếu không tìm thấy trong friends -> tìm trong global aliases
-    if (!debtorUserId && !/^\d+$/.test(debtor)) {
-      const globalMatches = await searchGlobalAliases(resolvedDebtor, userId);
-      
-      if (globalMatches.length === 1) {
-        // Chỉ có 1 kết quả -> gợi ý link
-        return {
-          ok: false,
-          reason: 'SUGGEST_LINK',
-          matches: globalMatches,
-          debtorAlias: resolvedDebtor,
-          amount,
-          content,
-          commandType: 'DEBT'
-        };
-      } else if (globalMatches.length > 1) {
-        // Nhiều kết quả -> cho user chọn
-        return {
-          ok: false,
-          reason: 'MULTIPLE_MATCHES',
-          matches: globalMatches,
-          debtorAlias: resolvedDebtor,
-          amount,
-          content,
-          commandType: 'DEBT'
-        };
-      } else {
-        // Không tìm thấy trong global aliases -> hiện friend list nếu có
-        const friends = await getLinkedFriends(userId);
-        if (friends.length > 0) {
-          return {
-            ok: false,
-            reason: 'UNKNOWN_DEBTOR',
-            debtorAlias: debtor,
-            amount,
-            content,
-            commandType: 'DEBT'
-          };
-        }
-      }
-    }
-    
-    // Nếu tìm thấy userId của debtor -> tạo PENDING debt
+    // Nếu tìm thấy userId của debtor (đã liên kết) -> tạo PENDING debt để xác nhận
     if (debtorUserId) {
       status = 'PENDING';
       debtCode = generateCode(6);
     }
+    // Nếu không tìm thấy -> vẫn ghi nợ bình thường với tên đó (CONFIRMED, không cần xác nhận)
   }
   
   const rowData = {
@@ -1299,54 +1259,15 @@ async function handleRepayDebt(userId, amount, debtor, content) {
       }
     }
     
+    // Tìm trong friends trước
     debtorUserId = await getFriendUserId(userId, resolvedDebtor);
     
-    // Nếu không tìm thấy trong friends -> tìm trong global aliases
-    if (!debtorUserId && !/^\d+$/.test(debtor)) {
-      const globalMatches = await searchGlobalAliases(resolvedDebtor, userId);
-      
-      if (globalMatches.length === 1) {
-        // Chỉ có 1 kết quả -> gợi ý link
-        return {
-          ok: false,
-          reason: 'SUGGEST_LINK',
-          matches: globalMatches,
-          debtorAlias: resolvedDebtor,
-          amount,
-          content,
-          commandType: 'PAID'
-        };
-      } else if (globalMatches.length > 1) {
-        // Nhiều kết quả -> cho user chọn
-        return {
-          ok: false,
-          reason: 'MULTIPLE_MATCHES',
-          matches: globalMatches,
-          debtorAlias: resolvedDebtor,
-          amount,
-          content,
-          commandType: 'PAID'
-        };
-      } else {
-        // Không tìm thấy trong global aliases -> hiện friend list nếu có
-        const friends = await getLinkedFriends(userId);
-        if (friends.length > 0) {
-          return {
-            ok: false,
-            reason: 'UNKNOWN_DEBTOR',
-            debtorAlias: debtor,
-            amount,
-            content,
-            commandType: 'PAID'
-          };
-        }
-      }
-    }
-    
+    // Nếu tìm thấy userId của debtor (đã liên kết) -> tạo PENDING để xác nhận
     if (debtorUserId) {
       status = 'PENDING';
       debtCode = generateCode(6);
     }
+    // Nếu không tìm thấy -> vẫn ghi trả nợ bình thường với tên đó (CONFIRMED)
   }
   
   const rowData = {
@@ -1837,79 +1758,9 @@ async function handleMessage(userId, messageText) {
         
       case 'DEBT':
         response = await handleAddDebt(userId, command.amount, command.debtor, command.content);
-        // Xử lý quick reply fallback khi không tìm thấy alias
+        // Xử lý lỗi INVALID_INDEX
         if (typeof response === 'object' && !response.ok) {
-          if (response.reason === 'SUGGEST_LINK') {
-            // Tìm thấy 1 người trong global aliases -> gợi ý link
-            const match = response.matches[0];
-            const quickReplies = [
-              {
-                content_type: 'text',
-                title: '✅ Đúng, liên kết',
-                payload: JSON.stringify({
-                  type: 'CONFIRM_LINK_AND_DEBT',
-                  targetUserId: match.userId,
-                  targetAlias: match.alias,
-                  amount: response.amount,
-                  content: response.content,
-                  commandType: response.commandType
-                })
-              },
-              {
-                content_type: 'text',
-                title: '❌ Không phải',
-                payload: JSON.stringify({ type: 'CANCEL_ACTION' })
-              }
-            ];
-            await sendMessageWithQuickReplies(
-              userId,
-              `🔍 Tìm thấy @${match.alias} (${match.fullName})\n` +
-              `Bạn muốn liên kết và ghi nợ ${formatAmount(response.amount)}đ?`,
-              quickReplies
-            );
-            return;
-          } else if (response.reason === 'MULTIPLE_MATCHES') {
-            // Nhiều kết quả -> cho user chọn
-            const quickReplies = response.matches.slice(0, 10).map(match => ({
-              content_type: 'text',
-              title: `@${match.alias}`,
-              payload: JSON.stringify({
-                type: 'CONFIRM_LINK_AND_DEBT',
-                targetUserId: match.userId,
-                targetAlias: match.alias,
-                amount: response.amount,
-                content: response.content,
-                commandType: response.commandType
-              })
-            }));
-            await sendMessageWithQuickReplies(
-              userId,
-              `🔍 Tìm thấy ${response.matches.length} người tên "${response.debtorAlias}":\n` +
-              response.matches.slice(0, 10).map((m, i) => `${i+1}) @${m.alias} - ${m.fullName}`).join('\n') +
-              `\n\n👇 Chọn đúng người:`,
-              quickReplies
-            );
-            return;
-          } else if (response.reason === 'UNKNOWN_DEBTOR') {
-            const friends = await getLinkedFriends(userId);
-            const quickReplies = friends.slice(0, 11).map((friend, index) => ({
-              content_type: 'text',
-              title: `@${friend.alias}`,
-              payload: JSON.stringify({
-                type: 'QUICK_REPLY_DEBT',
-                amount: response.amount,
-                content: response.content,
-                chosenAlias: friend.alias,
-                commandType: response.commandType
-              })
-            }));
-            await sendMessageWithQuickReplies(
-              userId,
-              `❌ Không tìm thấy "@${response.debtorAlias}".\n👉 Chọn một người trong danh sách:`,
-              quickReplies
-            );
-            return;
-          } else if (response.reason === 'INVALID_INDEX') {
+          if (response.reason === 'INVALID_INDEX') {
             await sendMessage(userId, response.message);
             return;
           }
@@ -1941,79 +1792,9 @@ async function handleMessage(userId, messageText) {
         
       case 'PAID':
         response = await handleRepayDebt(userId, command.amount, command.debtor, command.content);
-        // Xử lý quick reply fallback khi không tìm thấy alias
+        // Xử lý lỗi INVALID_INDEX
         if (typeof response === 'object' && !response.ok) {
-          if (response.reason === 'SUGGEST_LINK') {
-            // Tìm thấy 1 người trong global aliases -> gợi ý link
-            const match = response.matches[0];
-            const quickReplies = [
-              {
-                content_type: 'text',
-                title: '✅ Đúng, liên kết',
-                payload: JSON.stringify({
-                  type: 'CONFIRM_LINK_AND_DEBT',
-                  targetUserId: match.userId,
-                  targetAlias: match.alias,
-                  amount: response.amount,
-                  content: response.content,
-                  commandType: response.commandType
-                })
-              },
-              {
-                content_type: 'text',
-                title: '❌ Không phải',
-                payload: JSON.stringify({ type: 'CANCEL_ACTION' })
-              }
-            ];
-            await sendMessageWithQuickReplies(
-              userId,
-              `🔍 Tìm thấy @${match.alias} (${match.fullName})\n` +
-              `Bạn muốn liên kết và ghi trả ${formatAmount(response.amount)}đ?`,
-              quickReplies
-            );
-            return;
-          } else if (response.reason === 'MULTIPLE_MATCHES') {
-            // Nhiều kết quả -> cho user chọn
-            const quickReplies = response.matches.slice(0, 10).map(match => ({
-              content_type: 'text',
-              title: `@${match.alias}`,
-              payload: JSON.stringify({
-                type: 'CONFIRM_LINK_AND_DEBT',
-                targetUserId: match.userId,
-                targetAlias: match.alias,
-                amount: response.amount,
-                content: response.content,
-                commandType: response.commandType
-              })
-            }));
-            await sendMessageWithQuickReplies(
-              userId,
-              `🔍 Tìm thấy ${response.matches.length} người tên "${response.debtorAlias}":\n` +
-              response.matches.slice(0, 10).map((m, i) => `${i+1}) @${m.alias} - ${m.fullName}`).join('\n') +
-              `\n\n👇 Chọn đúng người:`,
-              quickReplies
-            );
-            return;
-          } else if (response.reason === 'UNKNOWN_DEBTOR') {
-            const friends = await getLinkedFriends(userId);
-            const quickReplies = friends.slice(0, 11).map((friend, index) => ({
-              content_type: 'text',
-              title: `@${friend.alias}`,
-              payload: JSON.stringify({
-                type: 'QUICK_REPLY_DEBT',
-                amount: response.amount,
-                content: response.content,
-                chosenAlias: friend.alias,
-                commandType: response.commandType
-              })
-            }));
-            await sendMessageWithQuickReplies(
-              userId,
-              `❌ Không tìm thấy "@${response.debtorAlias}".\n👉 Chọn một người trong danh sách:`,
-              quickReplies
-            );
-            return;
-          } else if (response.reason === 'INVALID_INDEX') {
+          if (response.reason === 'INVALID_INDEX') {
             await sendMessage(userId, response.message);
             return;
           }
