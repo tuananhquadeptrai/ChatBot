@@ -1451,33 +1451,72 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
   // Chỉ lấy CONFIRMED rows cho tính toán
   const confirmedRows = rows.filter(r => r.Status === 'CONFIRMED');
   
-  // Lọc rows thuộc về user này (là người tạo)
-  const myRows = confirmedRows.filter(r => r.UserID === userId);
-  
-  if (myRows.length === 0) {
+  if (confirmedRows.length === 0) {
     return '📋 Bạn chưa có giao dịch nào.';
   }
   
-  const filteredRows = filterDebtor 
-    ? myRows.filter(r => normalizeVietnamese(r.Debtor) === normalizeVietnamese(filterDebtor))
-    : myRows;
-  
-  if (filterDebtor && filteredRows.length === 0) {
-    return `📋 Không tìm thấy giao dịch của @${filterDebtor}`;
+  // Lấy danh sách bạn bè để map UserId -> Alias
+  const friends = await getLinkedFriends(userId);
+  const friendAliasMap = {};
+  for (const f of friends) {
+    friendAliasMap[f.userId] = f.alias;
   }
   
   const debtorStats = {};
   
-  for (const row of filteredRows) {
-    const debtor = row.Debtor || 'Chung';
-    if (!debtorStats[debtor]) {
-      debtorStats[debtor] = { debt: 0, paid: 0 };
+  for (const row of confirmedRows) {
+    let displayName;
+    let debtAmount = 0;
+    let paidAmount = 0;
+    
+    if (row.UserID === userId) {
+      // Giao dịch MÌNH tạo
+      // DEBT: người khác nợ mình -> họ nợ mình
+      // PAID: mình trả cho họ -> mình giảm nợ với họ
+      displayName = row.Debtor || 'Chung';
+      
+      if (row.Type === 'DEBT') {
+        debtAmount = row.Amount; // Họ nợ mình
+      } else if (row.Type === 'PAID') {
+        paidAmount = row.Amount; // Mình trả cho họ
+      }
+    } else if (row.DebtorUserID === userId) {
+      // Giao dịch NGƯỜI KHÁC tạo, mình là DebtorUserID
+      // Từ góc nhìn người tạo: DEBT = mình nợ họ, PAID = họ trả cho mình
+      // Từ góc nhìn MÌNH: DEBT = mình nợ họ (balance âm), PAID = họ trả cho mình (balance dương)
+      
+      // Lấy tên người tạo (người kia)
+      displayName = friendAliasMap[row.UserID] || await getAliasByUserId(row.UserID) || 'Ai đó';
+      
+      if (row.Type === 'DEBT') {
+        // Họ ghi "mình nợ họ" -> từ góc nhìn mình: mình nợ họ -> PAID (giảm balance)
+        paidAmount = row.Amount;
+      } else if (row.Type === 'PAID') {
+        // Họ ghi "họ trả cho mình" -> từ góc nhìn mình: họ trả nợ -> DEBT (tăng balance)
+        debtAmount = row.Amount;
+      }
+    } else {
+      continue; // Không liên quan đến user này
     }
-    if (row.Type === 'DEBT') {
-      debtorStats[debtor].debt += row.Amount;
-    } else if (row.Type === 'PAID') {
-      debtorStats[debtor].paid += row.Amount;
+    
+    // Filter theo debtor nếu có
+    if (filterDebtor && normalizeVietnamese(displayName) !== normalizeVietnamese(filterDebtor)) {
+      continue;
     }
+    
+    if (!debtorStats[displayName]) {
+      debtorStats[displayName] = { debt: 0, paid: 0 };
+    }
+    debtorStats[displayName].debt += debtAmount;
+    debtorStats[displayName].paid += paidAmount;
+  }
+  
+  // Kiểm tra có dữ liệu không
+  if (Object.keys(debtorStats).length === 0) {
+    if (filterDebtor) {
+      return `📋 Không tìm thấy giao dịch của @${filterDebtor}`;
+    }
+    return '📋 Bạn chưa có giao dịch nào.';
   }
   
   let totalDebt = 0;
@@ -1500,13 +1539,12 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
     responseText += `🟢 Đã trả: ${formatAmount(stats.paid)}đ\n`;
     responseText += `💰 CÒN NỢ: ${formatAmount(balance)}đ\n`;
     
-    const last5 = filteredRows.slice(-5).reverse();
-    if (last5.length > 0) {
-      responseText += `\n📋 Giao dịch gần nhất:\n`;
-      last5.forEach((row, i) => {
-        const typeLabel = row.Type === 'DEBT' ? '🔴' : '🟢';
-        responseText += `${i+1}. ${typeLabel} ${formatAmount(row.Amount)}đ\n`;
-      });
+    if (balance > 0) {
+      responseText += `\n→ @${filterDebtor} nợ bạn ${formatAmount(balance)}đ`;
+    } else if (balance < 0) {
+      responseText += `\n→ Bạn nợ @${filterDebtor} ${formatAmount(Math.abs(balance))}đ`;
+    } else {
+      responseText += `\n→ Hết nợ! 🎉`;
     }
   } else {
     responseText = onlyOwing ? `📊 NGƯỜI CÒN NỢ\n` : `📊 TỔNG HỢP NỢ\n`;
@@ -1527,12 +1565,19 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
     for (const d of sortedDebtors) {
       if (d.balance !== 0 || !onlyOwing) {
         const icon = d.balance > 0 ? '🔴' : '🟢';
-        responseText += `${icon} @${d.name}: ${formatAmount(d.balance)}đ\n`;
+        const label = d.balance > 0 ? 'nợ bạn' : 'bạn nợ';
+        responseText += `${icon} @${d.name}: ${formatAmount(Math.abs(d.balance))}đ (${label})\n`;
       }
     }
     
     responseText += `\n━━━━━━━━━━━━━━━━━━━━\n`;
-    responseText += `💰 TỔNG CÒN NỢ: ${formatAmount(totalBalance)}đ\n`;
+    if (totalBalance > 0) {
+      responseText += `💰 TỔNG: Người khác nợ bạn ${formatAmount(totalBalance)}đ\n`;
+    } else if (totalBalance < 0) {
+      responseText += `💰 TỔNG: Bạn nợ người khác ${formatAmount(Math.abs(totalBalance))}đ\n`;
+    } else {
+      responseText += `💰 TỔNG: Hết nợ! 🎉\n`;
+    }
     responseText += `\n💡 Gõ "check @Tên" để xem chi tiết`;
   }
   
