@@ -47,6 +47,15 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
+// Cảnh báo nếu thiếu APP_SECRET (security)
+if (!config.APP_SECRET) {
+  console.warn('⚠️ ================================================');
+  console.warn('⚠️ CẢNH BÁO: APP_SECRET chưa được cấu hình!');
+  console.warn('⚠️ Webhook KHÔNG được bảo vệ khỏi fake requests.');
+  console.warn('⚠️ Thêm APP_SECRET vào .env để bảo mật.');
+  console.warn('⚠️ ================================================');
+}
+
 // ============================================
 // KHỞI TẠO EXPRESS APP
 // ============================================
