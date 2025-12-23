@@ -125,6 +125,22 @@ function generateCode(length = 6) {
 }
 
 /**
+ * Random emoji để làm sinh động responses
+ */
+const EMOJIS = {
+  success: ['✅', '🎉', '👍', '💪', '🙌'],
+  money: ['💰', '💵', '💸', '🤑'],
+  thinking: ['🤔', '💭', '🧐'],
+  greeting: ['👋', '😊', '🙂', '✨'],
+  warning: ['⚠️', '🔔', '📢'],
+};
+
+function randomEmoji(type = 'success') {
+  const list = EMOJIS[type] || EMOJIS.success;
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+/**
  * Chuẩn hóa chuỗi tiếng Việt - bỏ dấu, lowercase
  * Cho phép matching: "Tuấn" = "Tuan" = "tuan"
  */
@@ -802,10 +818,39 @@ async function deleteLastTransaction(userId) {
 // MESSENGER CLIENT - GỬI TIN NHẮN
 // ============================================
 
+/**
+ * Gửi typing indicator (hiệu ứng "đang nhập...")
+ * @param {string} recipientId 
+ * @param {string} action - 'typing_on' | 'typing_off' | 'mark_seen'
+ */
+async function sendTypingIndicator(recipientId, action = 'typing_on') {
+  const url = `https://graph.facebook.com/v18.0/me/messages?access_token=${config.PAGE_ACCESS_TOKEN}`;
+  
+  try {
+    await axios.post(url, {
+      recipient: { id: recipientId },
+      sender_action: action,
+    });
+  } catch (error) {
+    // Không log lỗi typing indicator vì không quan trọng
+  }
+}
+
+/**
+ * Delay helper
+ */
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function sendMessage(recipientId, messageText) {
   const url = `https://graph.facebook.com/v18.0/me/messages?access_token=${config.PAGE_ACCESS_TOKEN}`;
   
   try {
+    // Hiệu ứng typing trước khi gửi
+    await sendTypingIndicator(recipientId, 'typing_on');
+    await delay(300 + Math.random() * 400); // 300-700ms delay tự nhiên
+    
     await axios.post(url, {
       recipient: { id: recipientId },
       message: { text: messageText },
@@ -820,6 +865,10 @@ async function sendMessageWithQuickReplies(recipientId, messageText, quickReplie
   const url = `https://graph.facebook.com/v18.0/me/messages?access_token=${config.PAGE_ACCESS_TOKEN}`;
   
   try {
+    // Hiệu ứng typing trước khi gửi
+    await sendTypingIndicator(recipientId, 'typing_on');
+    await delay(300 + Math.random() * 400);
+    
     await axios.post(url, {
       recipient: { id: recipientId },
       message: { 
@@ -1327,7 +1376,7 @@ async function handleAddDebt(userId, amount, debtor, content) {
   return { 
     ok: true,
     debtorAlias: resolvedDebtor || 'Chung',
-    message: `✅ Đã ghi nợ: ${formatAmount(amount)}đ\n👤 Người nợ: ${debtorLabel}\n📝 Nội dung: ${content}`
+    message: `${randomEmoji('success')} Đã ghi nợ: ${formatAmount(amount)}đ\n👤 Người nợ: ${debtorLabel}\n📝 Nội dung: ${content}`
   };
 }
 
@@ -1414,7 +1463,7 @@ async function handleRepayDebt(userId, amount, debtor, content) {
   return { 
     ok: true,
     debtorAlias: resolvedDebtor || 'Chung',
-    message: `✅ Đã ghi trả: ${formatAmount(amount)}đ\n👤 Người nhận: ${debtorLabel}\n📝 Nội dung: ${content}`
+    message: `${randomEmoji('success')} Đã ghi trả: ${formatAmount(amount)}đ\n👤 Người nhận: ${debtorLabel}\n📝 Nội dung: ${content}`
   };
 }
 
@@ -1883,7 +1932,7 @@ async function handleMessage(userId, messageText) {
     const autoAlias = await autoSetAliasFromFacebook(userId);
     if (autoAlias) {
       await sendMessage(userId, 
-        `👋 Chào bạn! Mình đặt tên cho bạn là @${autoAlias}\n` +
+        `${randomEmoji('greeting')} Chào bạn! Mình đặt tên cho bạn là @${autoAlias}\n` +
         `💡 Gõ "alias @TenKhac" nếu muốn đổi.`
       );
     }
