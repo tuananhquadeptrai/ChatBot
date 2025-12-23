@@ -2301,8 +2301,8 @@ app.post('/webhook', async (req, res) => {
 // ============================================
 app.listen(config.PORT, () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🚀 Facebook Debt Tracker Bot v2.4');
-  console.log('🐛 Bug fixes + 🔒 Webhook security + ⚡ Performance');
+  console.log('🚀 Facebook Debt Tracker Bot v2.5');
+  console.log('✨ Animations: typing indicator + random emoji');
   console.log(`📡 Server đang chạy tại port ${config.PORT}`);
   console.log(`📊 Google Sheet ID: ${config.GOOGLE_SHEET_ID.substring(0, 10)}...`);
   console.log(`🔒 Webhook security: ${config.APP_SECRET ? 'ENABLED' : 'DISABLED'}`);

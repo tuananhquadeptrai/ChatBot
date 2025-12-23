@@ -1,8 +1,8 @@
-# 📱 Facebook Messenger Debt Tracker Bot v2.3
+# 📱 Facebook Messenger Debt Tracker Bot v2.5
 
 Bot Facebook Messenger để theo dõi nợ cá nhân, sử dụng Google Sheets làm database.
 
-**✨ Tính năng mới v2.3: Flexible Input** - Gõ tự nhiên, không cần @!
+**✨ Tính năng mới v2.5: Animations** - Bot sinh động hơn với typing indicator + random emoji!
 
 ## 🚀 Tính năng
 
@@ -252,6 +252,14 @@ Render free tier sẽ ngủ sau 15 phút. Dùng [cron-job.org](https://cron-job.
 - Mã kết nối bạn bè hết hạn sau 24h
 
 ## 📝 Changelog
+
+### v2.5 (2024-12-23)
+- ✨ **Animations**: Bot sinh động hơn!
+  - Typing indicator ("đang nhập...") trước mỗi tin nhắn
+  - Random delay 300-700ms (giống người thật)
+  - Random emoji (✅🎉👍💪🙌) cho mỗi response
+  - Greeting emoji đa dạng (👋😊🙂✨) cho user mới
+- ⚠️ **Security warning**: Cảnh báo rõ ràng khi thiếu APP_SECRET
 
 ### v2.4 (2024-12-23)
 - 🐛 **Bug fixes**:
