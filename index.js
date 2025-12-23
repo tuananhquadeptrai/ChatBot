@@ -1914,7 +1914,30 @@ async function handleMessage(userId, messageText) {
             return;
           }
         }
-        break;
+        // ✅ Ghi nợ thành công -> Quick replies gợi ý
+        {
+          const debtorAlias = command.debtor || 'Chung';
+          const successQuickReplies = [
+            {
+              content_type: 'text',
+              title: '📝 Ghi nợ tiếp',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'DEBT' })
+            },
+            {
+              content_type: 'text',
+              title: `📊 Xem @${debtorAlias}`,
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'CHECK', debtor: debtorAlias })
+            },
+            {
+              content_type: 'text',
+              title: '↩️ Undo',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'UNDO' })
+            }
+          ];
+          const responseText = typeof response === 'string' ? response : response.message;
+          await sendMessageWithQuickReplies(userId, responseText, successQuickReplies);
+          return;
+        }
         
       case 'PAID':
         response = await handleRepayDebt(userId, command.amount, command.debtor, command.content);
@@ -1995,15 +2018,80 @@ async function handleMessage(userId, messageText) {
             return;
           }
         }
-        break;
+        // ✅ Trả nợ thành công -> Quick replies gợi ý
+        {
+          const debtorAlias = command.debtor || 'Chung';
+          const successQuickReplies = [
+            {
+              content_type: 'text',
+              title: '💵 Trả nợ tiếp',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'PAID' })
+            },
+            {
+              content_type: 'text',
+              title: `📊 Xem @${debtorAlias}`,
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'CHECK', debtor: debtorAlias })
+            },
+            {
+              content_type: 'text',
+              title: '↩️ Undo',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'UNDO' })
+            }
+          ];
+          const responseText = typeof response === 'string' ? response : response.message;
+          await sendMessageWithQuickReplies(userId, responseText, successQuickReplies);
+          return;
+        }
         
       case 'CHECK':
         response = await handleCheckDebt(userId, command.debtor, command.onlyOwing);
-        break;
+        // ✅ Xem nợ xong -> Quick replies gợi ý
+        {
+          const checkQuickReplies = [
+            {
+              content_type: 'text',
+              title: '📝 Ghi nợ',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'DEBT' })
+            },
+            {
+              content_type: 'text',
+              title: '💵 Trả nợ',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'PAID' })
+            },
+            {
+              content_type: 'text',
+              title: '⏳ Pending',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'PENDING' })
+            }
+          ];
+          await sendMessageWithQuickReplies(userId, response, checkQuickReplies);
+          return;
+        }
         
       case 'UNDO':
         response = await handleUndo(userId);
-        break;
+        // ✅ Undo xong -> Quick replies gợi ý
+        {
+          const undoQuickReplies = [
+            {
+              content_type: 'text',
+              title: '📝 Ghi nợ',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'DEBT' })
+            },
+            {
+              content_type: 'text',
+              title: '💵 Trả nợ',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'PAID' })
+            },
+            {
+              content_type: 'text',
+              title: '📊 Xem nợ',
+              payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'CHECK' })
+            }
+          ];
+          await sendMessageWithQuickReplies(userId, response, undoQuickReplies);
+          return;
+        }
         
       case 'SEARCH':
         response = await handleSearch(userId, command.keyword);
@@ -2140,6 +2228,44 @@ app.post('/webhook', async (req, res) => {
               const text = typeof result === 'string' ? result : result.message;
               await sendMessage(senderId, text);
               continue;
+            }
+            
+            // Xử lý gợi ý action từ quick reply
+            if (payload.type === 'SUGGEST_ACTION') {
+              const { action, debtor } = payload;
+              
+              if (action === 'DEBT') {
+                await sendMessage(senderId, '📝 Nhập lệnh ghi nợ:\nVD: no bao 50k tiền cơm');
+                continue;
+              }
+              
+              if (action === 'PAID') {
+                await sendMessage(senderId, '💵 Nhập lệnh trả nợ:\nVD: tra bao 50k');
+                continue;
+              }
+              
+              if (action === 'CHECK') {
+                let result;
+                if (debtor && debtor !== 'Chung') {
+                  result = await handleCheckDebt(senderId, debtor, false);
+                } else {
+                  result = await handleCheckDebt(senderId, null, false);
+                }
+                await sendMessage(senderId, result);
+                continue;
+              }
+              
+              if (action === 'UNDO') {
+                const result = await handleUndo(senderId);
+                await sendMessage(senderId, result);
+                continue;
+              }
+              
+              if (action === 'PENDING') {
+                const result = await handlePendingList(senderId);
+                await sendMessage(senderId, result);
+                continue;
+              }
             }
           } catch (err) {
             console.error('❌ Lỗi xử lý quick reply:', err);
