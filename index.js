@@ -25,6 +25,7 @@ const config = {
   PORT: process.env.PORT || 3000,
   PAGE_ACCESS_TOKEN: process.env.PAGE_ACCESS_TOKEN,
   VERIFY_TOKEN: process.env.VERIFY_TOKEN,
+  APP_SECRET: process.env.APP_SECRET,
   GOOGLE_SHEET_ID: process.env.GOOGLE_SHEET_ID,
   GOOGLE_SERVICE_ACCOUNT_EMAIL: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
   GOOGLE_PRIVATE_KEY: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
@@ -51,8 +52,60 @@ for (const envVar of requiredEnvVars) {
 // ============================================
 const path = require('path');
 const app = express();
-app.use(bodyParser.json());
+// Capture raw body để verify webhook signature
+app.use(bodyParser.json({
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// ============================================
+// WEBHOOK SIGNATURE VERIFICATION
+// ============================================
+
+/**
+ * Verify Facebook Webhook signature
+ * @param {Request} req - Express request
+ * @returns {boolean} true if signature is valid
+ */
+function verifyWebhookSignature(req) {
+  const signature = req.headers['x-hub-signature-256'];
+  
+  if (!signature) {
+    console.warn('⚠️ Missing X-Hub-Signature-256 header');
+    return false;
+  }
+  
+  const [algo, receivedHash] = signature.split('=');
+  
+  if (algo !== 'sha256' || !receivedHash) {
+    console.warn('⚠️ Invalid signature format');
+    return false;
+  }
+  
+  try {
+    const rawBody = req.rawBody || Buffer.from(JSON.stringify(req.body), 'utf8');
+    const expectedHash = crypto
+      .createHmac('sha256', config.APP_SECRET)
+      .update(rawBody)
+      .digest('hex');
+    
+    const isValid = crypto.timingSafeEqual(
+      Buffer.from(receivedHash, 'hex'),
+      Buffer.from(expectedHash, 'hex')
+    );
+    
+    if (!isValid) {
+      console.warn('⚠️ Webhook signature mismatch');
+    }
+    
+    return isValid;
+  } catch (error) {
+    console.error('❌ Lỗi verify signature:', error.message);
+    return false;
+  }
+}
 
 // ============================================
 // UTILITY FUNCTIONS
@@ -328,6 +381,31 @@ async function getUserIdByAlias(alias) {
   } catch (error) {
     console.error('❌ Lỗi getUserIdByAlias:', error.message);
     return null;
+  }
+}
+
+/**
+ * Build alias cache từ Aliases sheet - load 1 lần thay vì N lần
+ * @returns {Promise<{[userId: string]: string}>} Map userId -> alias
+ */
+async function buildAliasCache() {
+  try {
+    const doc = await getGoogleSheet();
+    const sheet = await getAliasesSheet(doc);
+    const rows = await sheet.getRows();
+    
+    const aliasMap = {};
+    for (const row of rows) {
+      const userId = row.get('UserID');
+      const alias = row.get('Alias');
+      if (userId && alias) {
+        aliasMap[userId] = alias;
+      }
+    }
+    return aliasMap;
+  } catch (error) {
+    console.error('❌ Lỗi buildAliasCache:', error.message);
+    return {};
   }
 }
 
@@ -1230,12 +1308,18 @@ async function handleAddDebt(userId, amount, debtor, content) {
       quickReplies
     );
     
-    return `⏳ Đã gửi yêu cầu xác nhận đến ${debtorLabel}\n` +
-           `💰 Số tiền: ${formatAmount(amount)}đ\n` +
-           `🔑 Mã: ${debtCode}`;
+    return { 
+      ok: true,
+      debtorAlias: resolvedDebtor || 'Chung',
+      message: `⏳ Đã gửi yêu cầu xác nhận đến ${debtorLabel}\n💰 Số tiền: ${formatAmount(amount)}đ\n🔑 Mã: ${debtCode}`
+    };
   }
   
-  return `✅ Đã ghi nợ: ${formatAmount(amount)}đ\n👤 Người nợ: ${debtorLabel}\n📝 Nội dung: ${content}`;
+  return { 
+    ok: true,
+    debtorAlias: resolvedDebtor || 'Chung',
+    message: `✅ Đã ghi nợ: ${formatAmount(amount)}đ\n👤 Người nợ: ${debtorLabel}\n📝 Nội dung: ${content}`
+  };
 }
 
 async function handleRepayDebt(userId, amount, debtor, content) {
@@ -1311,12 +1395,18 @@ async function handleRepayDebt(userId, amount, debtor, content) {
       quickReplies
     );
     
-    return `⏳ Đã gửi yêu cầu xác nhận đến ${debtorLabel}\n` +
-           `💰 Số tiền: ${formatAmount(amount)}đ\n` +
-           `🔑 Mã: ${debtCode}`;
+    return { 
+      ok: true,
+      debtorAlias: resolvedDebtor || 'Chung',
+      message: `⏳ Đã gửi yêu cầu xác nhận đến ${debtorLabel}\n💰 Số tiền: ${formatAmount(amount)}đ\n🔑 Mã: ${debtCode}`
+    };
   }
   
-  return `✅ Đã ghi trả: ${formatAmount(amount)}đ\n👤 Người nhận: ${debtorLabel}\n📝 Nội dung: ${content}`;
+  return { 
+    ok: true,
+    debtorAlias: resolvedDebtor || 'Chung',
+    message: `✅ Đã ghi trả: ${formatAmount(amount)}đ\n👤 Người nhận: ${debtorLabel}\n📝 Nội dung: ${content}`
+  };
 }
 
 async function handleConfirmDebt(userId, code) {
@@ -1455,8 +1545,13 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
     return '📋 Bạn chưa có giao dịch nào.';
   }
   
-  // Lấy danh sách bạn bè để map UserId -> Alias
-  const friends = await getLinkedFriends(userId);
+  // Load alias cache 1 lần thay vì N lần trong loop (Performance optimization)
+  const [friends, aliasCache] = await Promise.all([
+    getLinkedFriends(userId),
+    buildAliasCache()
+  ]);
+  
+  // Map friend userId -> alias
   const friendAliasMap = {};
   for (const f of friends) {
     friendAliasMap[f.userId] = f.alias;
@@ -1485,8 +1580,8 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
       // Từ góc nhìn người tạo: DEBT = mình nợ họ, PAID = họ trả cho mình
       // Từ góc nhìn MÌNH: DEBT = mình nợ họ (balance âm), PAID = họ trả cho mình (balance dương)
       
-      // Lấy tên người tạo (người kia)
-      displayName = friendAliasMap[row.UserID] || await getAliasByUserId(row.UserID) || 'Ai đó';
+      // Lấy tên người tạo (người kia) - dùng cache thay vì gọi getAliasByUserId
+      displayName = friendAliasMap[row.UserID] || aliasCache[row.UserID] || 'Ai đó';
       
       if (row.Type === 'DEBT') {
         // Họ ghi "mình nợ họ" -> từ góc nhìn mình: mình nợ họ -> PAID (giảm balance)
@@ -1504,11 +1599,13 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
       continue;
     }
     
-    if (!debtorStats[displayName]) {
-      debtorStats[displayName] = { debt: 0, paid: 0 };
+    // Dùng normalized key để lookup chính xác (bao = Bao = Bảo)
+    const debtorKey = normalizeVietnamese(displayName) || '__unknown__';
+    if (!debtorStats[debtorKey]) {
+      debtorStats[debtorKey] = { debt: 0, paid: 0, displayName: displayName };
     }
-    debtorStats[displayName].debt += debtAmount;
-    debtorStats[displayName].paid += paidAmount;
+    debtorStats[debtorKey].debt += debtAmount;
+    debtorStats[debtorKey].paid += paidAmount;
   }
   
   // Kiểm tra có dữ liệu không
@@ -1530,19 +1627,22 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
   let responseText = '';
   
   if (filterDebtor) {
-    const stats = debtorStats[filterDebtor] || { debt: 0, paid: 0 };
+    // Dùng normalized key để lookup
+    const filterKey = normalizeVietnamese(filterDebtor);
+    const stats = debtorStats[filterKey] || { debt: 0, paid: 0, displayName: filterDebtor };
     const balance = stats.debt - stats.paid;
+    const displayName = stats.displayName || filterDebtor;
     
-    responseText = `📊 CHI TIẾT @${filterDebtor}\n`;
+    responseText = `📊 CHI TIẾT @${displayName}\n`;
     responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
     responseText += `🔴 Tổng nợ: ${formatAmount(stats.debt)}đ\n`;
     responseText += `🟢 Đã trả: ${formatAmount(stats.paid)}đ\n`;
     responseText += `💰 CÒN NỢ: ${formatAmount(balance)}đ\n`;
     
     if (balance > 0) {
-      responseText += `\n→ @${filterDebtor} nợ bạn ${formatAmount(balance)}đ`;
+      responseText += `\n→ @${displayName} nợ bạn ${formatAmount(balance)}đ`;
     } else if (balance < 0) {
-      responseText += `\n→ Bạn nợ @${filterDebtor} ${formatAmount(Math.abs(balance))}đ`;
+      responseText += `\n→ Bạn nợ @${displayName} ${formatAmount(Math.abs(balance))}đ`;
     } else {
       responseText += `\n→ Hết nợ! 🎉`;
     }
@@ -1551,7 +1651,7 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
     responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
     
     let sortedDebtors = Object.entries(debtorStats)
-      .map(([name, stats]) => ({ name, balance: stats.debt - stats.paid, ...stats }))
+      .map(([key, stats]) => ({ name: stats.displayName || key, balance: stats.debt - stats.paid, ...stats }))
       .sort((a, b) => b.balance - a.balance);
     
     if (onlyOwing) {
@@ -1630,7 +1730,8 @@ async function handleSearch(userId, keyword) {
 
 async function handleStats(userId, period) {
   const rows = await getRowsByUser(userId);
-  const myRows = rows.filter(r => r.UserID === userId && r.Status === 'CONFIRMED');
+  // Include cả rows mình tạo và rows người khác tạo có mình là DebtorUserID (2-way sync)
+  const confirmedRows = rows.filter(r => r.Status === 'CONFIRMED');
   
   const now = new Date();
   let startDate;
@@ -1662,7 +1763,7 @@ async function handleStats(userId, period) {
     periodLabel = 'Tháng này';
   }
   
-  const filteredRows = myRows.filter(row => {
+  const filteredRows = confirmedRows.filter(row => {
     try {
       const parts = row.Date.split(/[,\s]+/);
       const datePart = parts.find(p => p.includes('/'));
@@ -1679,23 +1780,42 @@ async function handleStats(userId, period) {
     return `📊 ${periodLabel}: Không có giao dịch nào.`;
   }
   
-  let totalDebt = 0;
-  let totalPaid = 0;
+  // Áp dụng logic 2-way như handleCheckDebt
+  let totalOthersOweMe = 0;  // Người khác nợ mình
+  let totalIOweOthers = 0;   // Mình nợ người khác
   
   for (const row of filteredRows) {
-    if (row.Type === 'DEBT') {
-      totalDebt += row.Amount;
-    } else {
-      totalPaid += row.Amount;
+    if (row.UserID === userId) {
+      // Giao dịch MÌNH tạo
+      if (row.Type === 'DEBT') {
+        totalOthersOweMe += row.Amount; // Họ nợ mình
+      } else if (row.Type === 'PAID') {
+        totalIOweOthers += row.Amount;  // Mình trả cho họ (giảm nợ)
+      }
+    } else if (row.DebtorUserID === userId) {
+      // Giao dịch NGƯỜI KHÁC tạo, mình là debtor
+      if (row.Type === 'DEBT') {
+        totalIOweOthers += row.Amount;  // Mình nợ họ
+      } else if (row.Type === 'PAID') {
+        totalOthersOweMe += row.Amount; // Họ trả cho mình
+      }
     }
   }
+  
+  const netBalance = totalOthersOweMe - totalIOweOthers;
   
   let responseText = `📊 THỐNG KÊ ${periodLabel.toUpperCase()}\n`;
   responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
   responseText += `📈 Số giao dịch: ${filteredRows.length}\n`;
-  responseText += `🔴 Nợ mới: ${formatAmount(totalDebt)}đ\n`;
-  responseText += `🟢 Đã trả: ${formatAmount(totalPaid)}đ\n`;
-  responseText += `💰 Chênh lệch: ${formatAmount(totalDebt - totalPaid)}đ\n`;
+  responseText += `🔴 Người khác nợ bạn: ${formatAmount(totalOthersOweMe)}đ\n`;
+  responseText += `🟢 Bạn nợ người khác: ${formatAmount(totalIOweOthers)}đ\n`;
+  if (netBalance > 0) {
+    responseText += `💰 Tổng cộng: Người khác nợ bạn ${formatAmount(netBalance)}đ\n`;
+  } else if (netBalance < 0) {
+    responseText += `💰 Tổng cộng: Bạn nợ người khác ${formatAmount(Math.abs(netBalance))}đ\n`;
+  } else {
+    responseText += `💰 Tổng cộng: Hết nợ! 🎉\n`;
+  }
   
   return responseText;
 }
@@ -1812,7 +1932,8 @@ async function handleMessage(userId, messageText) {
         }
         // ✅ Ghi nợ thành công -> Quick replies gợi ý
         {
-          const debtorAlias = command.debtor || 'Chung';
+          // Dùng resolved alias từ response, không dùng command.debtor (có thể là "1")
+          const debtorAlias = (typeof response === 'object' && response.debtorAlias) || command.debtor || 'Chung';
           const successQuickReplies = [
             {
               content_type: 'text',
@@ -1846,7 +1967,8 @@ async function handleMessage(userId, messageText) {
         }
         // ✅ Trả nợ thành công -> Quick replies gợi ý
         {
-          const debtorAlias = command.debtor || 'Chung';
+          // Dùng resolved alias từ response, không dùng command.debtor (có thể là "1")
+          const debtorAlias = (typeof response === 'object' && response.debtorAlias) || command.debtor || 'Chung';
           const successQuickReplies = [
             {
               content_type: 'text',
@@ -1969,6 +2091,16 @@ app.get('/webhook', (req, res) => {
 
 app.post('/webhook', async (req, res) => {
   const body = req.body;
+  
+  // Verify webhook signature nếu APP_SECRET được cấu hình
+  if (config.APP_SECRET) {
+    if (!verifyWebhookSignature(req)) {
+      console.error('❌ Webhook signature verification failed');
+      return res.sendStatus(403);
+    }
+  } else {
+    console.warn('⚠️ APP_SECRET chưa được cấu hình - webhook không được bảo vệ!');
+  }
   
   if (body.object !== 'page') {
     res.sendStatus(404);
@@ -2111,9 +2243,10 @@ app.post('/webhook', async (req, res) => {
 // ============================================
 app.listen(config.PORT, () => {
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  console.log('🚀 Facebook Debt Tracker Bot v2.3');
-  console.log('✨ Tính năng mới: Flexible Input (gõ tự nhiên)');
+  console.log('🚀 Facebook Debt Tracker Bot v2.4');
+  console.log('🐛 Bug fixes + 🔒 Webhook security + ⚡ Performance');
   console.log(`📡 Server đang chạy tại port ${config.PORT}`);
   console.log(`📊 Google Sheet ID: ${config.GOOGLE_SHEET_ID.substring(0, 10)}...`);
+  console.log(`🔒 Webhook security: ${config.APP_SECRET ? 'ENABLED' : 'DISABLED'}`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
 });

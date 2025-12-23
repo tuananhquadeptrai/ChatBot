@@ -253,6 +253,14 @@ Render free tier sẽ ngủ sau 15 phút. Dùng [cron-job.org](https://cron-job.
 
 ## 📝 Changelog
 
+### v2.4 (2024-12-23)
+- 🐛 **Bug fixes**:
+  - Fix per-debtor lookup: `check @bao` giờ match `@Bao` đúng
+  - Fix quick reply @1: dùng alias đã resolve thay vì số
+  - Fix handleStats: thêm 2-way sync (count cả DebtorUserID)
+- 🔒 **Security**: Thêm webhook signature verification với APP_SECRET
+- ⚡ **Performance**: Cache alias thay vì N lần API calls trong handleCheckDebt
+
 ### v2.3 (2024-12-23)
 - ✨ **Flexible Input**: Gõ tự nhiên không cần @
   - `tuan anh no 50k tien com` (tên trước)
