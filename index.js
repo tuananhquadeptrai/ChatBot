@@ -1615,41 +1615,38 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
     friendAliasMap[f.userId] = f.alias;
   }
   
+  // Stats cho từng người: theyOweMe = họ nợ mình, iOweThem = mình nợ họ
   const debtorStats = {};
   
   for (const row of confirmedRows) {
     let displayName;
-    let debtAmount = 0;
-    let paidAmount = 0;
+    let theyOweMe = 0;  // Số tiền họ nợ mình (dương)
+    let iOweThem = 0;   // Số tiền mình nợ họ (dương)
     
     if (row.UserID === userId) {
       // Giao dịch MÌNH tạo
-      // DEBT: người khác nợ mình -> họ nợ mình
-      // PAID: mình trả cho họ -> mình giảm nợ với họ
       displayName = row.Debtor || 'Chung';
       
       if (row.Type === 'DEBT') {
-        debtAmount = row.Amount; // Họ nợ mình
+        // Mình ghi nợ: họ bắt đầu nợ mình
+        theyOweMe = row.Amount;
       } else if (row.Type === 'PAID') {
-        debtAmount = row.Amount; // Mình trả cho họ -> bù trừ phần mình nợ họ
+        // Mình trả nợ cho họ: giảm số mình nợ họ
+        iOweThem = -row.Amount; // Âm để trừ đi
       }
     } else if (row.DebtorUserID === userId) {
       // Giao dịch NGƯỜI KHÁC tạo, mình là DebtorUserID
-      // Từ góc nhìn người tạo: DEBT = mình nợ họ, PAID = họ trả cho mình
-      // Từ góc nhìn MÌNH: DEBT = mình nợ họ (balance âm), PAID = họ trả cho mình (balance dương)
-      
-      // Lấy tên người tạo (người kia) - dùng cache thay vì gọi getAliasByUserId
       displayName = friendAliasMap[row.UserID] || aliasCache[row.UserID] || 'Ai đó';
       
       if (row.Type === 'DEBT') {
-        // Họ ghi "mình nợ họ" -> từ góc nhìn mình: mình nợ họ -> PAID (giảm balance)
-        paidAmount = row.Amount;
+        // Họ ghi nợ: mình bắt đầu nợ họ
+        iOweThem = row.Amount;
       } else if (row.Type === 'PAID') {
-        // Họ ghi "tra @mình" (họ trả cho mình) -> họ giảm nợ với mình -> PAID (giảm balance)
-        paidAmount = row.Amount;
+        // Họ trả nợ cho mình: giảm số họ nợ mình
+        theyOweMe = -row.Amount; // Âm để trừ đi
       }
     } else {
-      continue; // Không liên quan đến user này
+      continue;
     }
     
     // Filter theo debtor nếu có
@@ -1657,13 +1654,12 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
       continue;
     }
     
-    // Dùng normalized key để lookup chính xác (bao = Bao = Bảo)
     const debtorKey = normalizeVietnamese(displayName) || '__unknown__';
     if (!debtorStats[debtorKey]) {
-      debtorStats[debtorKey] = { debt: 0, paid: 0, displayName: displayName };
+      debtorStats[debtorKey] = { theyOweMe: 0, iOweThem: 0, displayName: displayName };
     }
-    debtorStats[debtorKey].debt += debtAmount;
-    debtorStats[debtorKey].paid += paidAmount;
+    debtorStats[debtorKey].theyOweMe += theyOweMe;
+    debtorStats[debtorKey].iOweThem += iOweThem;
   }
   
   // Kiểm tra có dữ liệu không
@@ -1674,42 +1670,58 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
     return '📋 Bạn chưa có giao dịch nào.';
   }
   
-  let totalDebt = 0;
-  let totalPaid = 0;
-  for (const stats of Object.values(debtorStats)) {
-    totalDebt += stats.debt;
-    totalPaid += stats.paid;
+  // Tính toán balance thực cho từng người và normalize (không cho âm quá 0)
+  const processedStats = {};
+  for (const [key, stats] of Object.entries(debtorStats)) {
+    // Net balance = họ nợ mình - mình nợ họ
+    // Dương = họ nợ mình, Âm = mình nợ họ
+    const netBalance = stats.theyOweMe - stats.iOweThem;
+    
+    // Tính số nợ thực tế (không âm)
+    const actualTheyOweMe = Math.max(0, netBalance);
+    const actualIOweThem = Math.max(0, -netBalance);
+    
+    processedStats[key] = {
+      displayName: stats.displayName,
+      theyOweMe: actualTheyOweMe,  // Họ đang nợ mình (số dương)
+      iOweThem: actualIOweThem,    // Mình đang nợ họ (số dương)
+      balance: netBalance          // Dương = họ nợ, Âm = mình nợ
+    };
   }
-  const totalBalance = totalDebt - totalPaid;
+  
+  let totalTheyOweMe = 0;
+  let totalIOweThem = 0;
+  for (const stats of Object.values(processedStats)) {
+    totalTheyOweMe += stats.theyOweMe;
+    totalIOweThem += stats.iOweThem;
+  }
+  const totalBalance = totalTheyOweMe - totalIOweThem;
   
   let responseText = '';
   
   if (filterDebtor) {
-    // Dùng normalized key để lookup
     const filterKey = normalizeVietnamese(filterDebtor);
-    const stats = debtorStats[filterKey] || { debt: 0, paid: 0, displayName: filterDebtor };
-    const balance = stats.debt - stats.paid;
+    const stats = processedStats[filterKey] || { theyOweMe: 0, iOweThem: 0, balance: 0, displayName: filterDebtor };
     const displayName = stats.displayName || filterDebtor;
     
     responseText = `📊 CHI TIẾT @${displayName}\n`;
     responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
-    responseText += `🔴 Tổng nợ: ${formatAmount(stats.debt)}đ\n`;
-    responseText += `🟢 Đã trả: ${formatAmount(stats.paid)}đ\n`;
-    responseText += `💰 CÒN NỢ: ${formatAmount(balance)}đ\n`;
     
-    if (balance > 0) {
-      responseText += `\n→ @${displayName} nợ bạn ${formatAmount(balance)}đ`;
-    } else if (balance < 0) {
-      responseText += `\n→ Bạn nợ @${displayName} ${formatAmount(Math.abs(balance))}đ`;
+    if (stats.balance > 0) {
+      responseText += `🔴 @${displayName} nợ bạn: ${formatAmount(stats.theyOweMe)}đ\n`;
+      responseText += `\n→ @${displayName} đang nợ bạn ${formatAmount(stats.balance)}đ`;
+    } else if (stats.balance < 0) {
+      responseText += `🟢 Bạn nợ @${displayName}: ${formatAmount(stats.iOweThem)}đ\n`;
+      responseText += `\n→ Bạn đang nợ @${displayName} ${formatAmount(Math.abs(stats.balance))}đ`;
     } else {
+      responseText += `💰 Hết nợ với @${displayName}!\n`;
       responseText += `\n→ Hết nợ! 🎉`;
     }
   } else {
     responseText = onlyOwing ? `📊 NGƯỜI CÒN NỢ\n` : `📊 TỔNG HỢP NỢ\n`;
     responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
     
-    let sortedDebtors = Object.entries(debtorStats)
-      .map(([key, stats]) => ({ name: stats.displayName || key, balance: stats.debt - stats.paid, ...stats }))
+    let sortedDebtors = Object.values(processedStats)
       .sort((a, b) => b.balance - a.balance);
     
     if (onlyOwing) {
@@ -1724,7 +1736,7 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
       if (d.balance !== 0 || !onlyOwing) {
         const icon = d.balance > 0 ? '🔴' : '🟢';
         const label = d.balance > 0 ? 'nợ bạn' : 'bạn nợ';
-        responseText += `${icon} @${d.name}: ${formatAmount(Math.abs(d.balance))}đ (${label})\n`;
+        responseText += `${icon} @${d.displayName}: ${formatAmount(Math.abs(d.balance))}đ (${label})\n`;
       }
     }
     
@@ -1838,35 +1850,43 @@ async function handleStats(userId, period) {
     return `📊 ${periodLabel}: Không có giao dịch nào.`;
   }
   
-  // Áp dụng logic 2-way như handleCheckDebt
-  let totalOthersOweMe = 0;  // Người khác nợ mình
-  let totalIOweOthers = 0;   // Mình nợ người khác
+  // Áp dụng logic bù trừ đúng như handleCheckDebt
+  // theyOweMe = họ nợ mình, iOweThem = mình nợ họ
+  let theyOweMe = 0;
+  let iOweThem = 0;
   
   for (const row of filteredRows) {
     if (row.UserID === userId) {
       // Giao dịch MÌNH tạo
       if (row.Type === 'DEBT') {
-        totalOthersOweMe += row.Amount; // Họ nợ mình
+        // Mình ghi nợ: họ bắt đầu nợ mình
+        theyOweMe += row.Amount;
       } else if (row.Type === 'PAID') {
-        totalOthersOweMe += row.Amount;  // Mình trả cho họ -> bù trừ phần mình nợ họ
+        // Mình trả nợ cho họ: giảm số mình nợ họ
+        iOweThem -= row.Amount;
       }
     } else if (row.DebtorUserID === userId) {
       // Giao dịch NGƯỜI KHÁC tạo, mình là debtor
       if (row.Type === 'DEBT') {
-        totalIOweOthers += row.Amount;  // Mình nợ họ
+        // Họ ghi nợ: mình bắt đầu nợ họ
+        iOweThem += row.Amount;
       } else if (row.Type === 'PAID') {
-        totalIOweOthers += row.Amount;  // Họ trả cho mình -> giảm nợ mình với họ
+        // Họ trả nợ cho mình: giảm số họ nợ mình
+        theyOweMe -= row.Amount;
       }
     }
   }
   
-  const netBalance = totalOthersOweMe - totalIOweOthers;
+  // Normalize: tính số nợ thực tế (không âm)
+  const netBalance = theyOweMe - iOweThem;
+  const actualTheyOweMe = Math.max(0, netBalance);
+  const actualIOweThem = Math.max(0, -netBalance);
   
   let responseText = `📊 THỐNG KÊ ${periodLabel.toUpperCase()}\n`;
   responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
   responseText += `📈 Số giao dịch: ${filteredRows.length}\n`;
-  responseText += `🔴 Người khác nợ bạn: ${formatAmount(totalOthersOweMe)}đ\n`;
-  responseText += `🟢 Bạn nợ người khác: ${formatAmount(totalIOweOthers)}đ\n`;
+  responseText += `🔴 Người khác nợ bạn: ${formatAmount(actualTheyOweMe)}đ\n`;
+  responseText += `🟢 Bạn nợ người khác: ${formatAmount(actualIOweThem)}đ\n`;
   if (netBalance > 0) {
     responseText += `💰 Tổng cộng: Người khác nợ bạn ${formatAmount(netBalance)}đ\n`;
   } else if (netBalance < 0) {
