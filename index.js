@@ -35,6 +35,7 @@ const config = {
 const requiredEnvVars = [
   'PAGE_ACCESS_TOKEN',
   'VERIFY_TOKEN', 
+  'APP_SECRET',
   'GOOGLE_SHEET_ID',
   'GOOGLE_SERVICE_ACCOUNT_EMAIL',
   'GOOGLE_PRIVATE_KEY'
@@ -47,14 +48,7 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
-// Cảnh báo nếu thiếu APP_SECRET (security)
-if (!config.APP_SECRET) {
-  console.warn('⚠️ ================================================');
-  console.warn('⚠️ CẢNH BÁO: APP_SECRET chưa được cấu hình!');
-  console.warn('⚠️ Webhook KHÔNG được bảo vệ khỏi fake requests.');
-  console.warn('⚠️ Thêm APP_SECRET vào .env để bảo mật.');
-  console.warn('⚠️ ================================================');
-}
+
 
 // ============================================
 // KHỞI TẠO EXPRESS APP
@@ -460,13 +454,13 @@ async function searchGlobalAliases(searchAlias, excludeUserId = '') {
       
       // Exact match hoặc starts with
       if (aliasNorm === inputNorm || aliasNorm.startsWith(inputNorm) || inputNorm.startsWith(aliasNorm)) {
-        // Lấy tên đầy đủ từ Facebook nếu có thể
-        const profile = await getFacebookProfile(userId);
         results.push({
           userId,
           alias,
-          fullName: profile?.name || alias
+          fullName: alias
         });
+        // Limit to 5 results
+        if (results.length >= 5) break;
       }
     }
     
@@ -648,6 +642,8 @@ async function getLinkedFriends(userId) {
     const sheet = await getFriendLinksSheet(doc);
     const rows = await sheet.getRows();
     
+    const aliasCache = await buildAliasCache();
+    
     const friends = [];
     for (const row of rows) {
       if (row.get('Status') !== 'ACTIVE') continue;
@@ -660,7 +656,7 @@ async function getLinkedFriends(userId) {
       } else if (row.get('UserID_B') === userId) {
         friends.push({
           userId: row.get('UserID_A'),
-          alias: row.get('AliasOfAForB') || await getAliasByUserId(row.get('UserID_A'))
+          alias: row.get('AliasOfAForB') || aliasCache[row.get('UserID_A')]
         });
       }
     }
@@ -1426,6 +1422,34 @@ async function handleRepayDebt(userId, amount, debtor, content) {
   
   await appendRow(rowData);
   
+  // Check if overpaying - calculate current debt first
+  let overpayWarning = '';
+  if (debtorUserId || resolvedDebtor) {
+    const rows = await getRowsByUser(userId);
+    const confirmedRows = rows.filter(r => r.Status === 'CONFIRMED');
+    
+    // Calculate what user owes to this debtor
+    let owedAmount = 0;
+    for (const row of confirmedRows) {
+      const rowDebtor = row.Debtor || 'Chung';
+      if (normalizeVietnamese(rowDebtor) !== normalizeVietnamese(resolvedDebtor || 'Chung')) continue;
+      
+      if (row.UserID === userId && row.Type === 'DEBT') {
+        // User recorded debt to them - they owe user (not relevant for repay)
+      } else if (row.UserID === userId && row.Type === 'PAID') {
+        owedAmount -= row.Amount; // Paying reduces what user owes
+      } else if (row.DebtorUserID === userId && row.Type === 'DEBT') {
+        owedAmount += row.Amount; // Someone recorded user owes them
+      } else if (row.DebtorUserID === userId && row.Type === 'PAID') {
+        // They paid user (not relevant)
+      }
+    }
+    
+    if (owedAmount < amount) {
+      overpayWarning = `\n⚠️ Lưu ý: Bạn đang trả nhiều hơn số nợ hiện tại!`;
+    }
+  }
+  
   const debtorLabel = resolvedDebtor ? `@${resolvedDebtor}` : 'Chung';
   
   if (status === 'PENDING' && debtorUserId) {
@@ -1456,14 +1480,14 @@ async function handleRepayDebt(userId, amount, debtor, content) {
     return { 
       ok: true,
       debtorAlias: resolvedDebtor || 'Chung',
-      message: `⏳ Đã gửi yêu cầu xác nhận đến ${debtorLabel}\n💰 Số tiền: ${formatAmount(amount)}đ\n🔑 Mã: ${debtCode}`
+      message: `⏳ Đã gửi yêu cầu xác nhận đến ${debtorLabel}\n💰 Số tiền: ${formatAmount(amount)}đ\n🔑 Mã: ${debtCode}${overpayWarning}`
     };
   }
   
   return { 
     ok: true,
     debtorAlias: resolvedDebtor || 'Chung',
-    message: `${randomEmoji('success')} Đã ghi trả: ${formatAmount(amount)}đ\n👤 Người nhận: ${debtorLabel}\n📝 Nội dung: ${content}`
+    message: `${randomEmoji('success')} Đã ghi trả: ${formatAmount(amount)}đ\n👤 Người nhận: ${debtorLabel}\n📝 Nội dung: ${content}${overpayWarning}`
   };
 }
 
@@ -1539,11 +1563,14 @@ async function handlePendingList(userId) {
     return '📋 Không có giao dịch nào chờ xác nhận.';
   }
   
+  // Build alias cache once to avoid N+1 queries
+  const aliasCache = await buildAliasCache();
+  
   let response = `📋 GIAO DỊCH CHỜ XÁC NHẬN (${pending.length})\n`;
   response += `━━━━━━━━━━━━━━━━━━━━\n`;
   
   for (const debt of pending) {
-    const creatorAlias = await getAliasByUserId(debt.UserID);
+    const creatorAlias = aliasCache[debt.UserID];
     const typeLabel = debt.Type === 'DEBT' ? '🔴 Nợ' : '🟢 Trả';
     response += `${typeLabel} ${formatAmount(debt.Amount)}đ\n`;
     response += `👤 Từ: @${creatorAlias || 'Ai đó'}\n`;
@@ -1805,6 +1832,7 @@ async function handleStats(userId, period) {
   
   const now = new Date();
   let startDate;
+  let endDate = null;
   let periodLabel;
   
   const periodLower = period.toLowerCase().replace(/\s+/g, '');
@@ -1821,12 +1849,15 @@ async function handleStats(userId, period) {
     const dayOfWeek = now.getDay();
     const diff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1) - 7;
     startDate = new Date(now.getFullYear(), now.getMonth(), diff);
+    const endDiff = now.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1);
+    endDate = new Date(now.getFullYear(), now.getMonth(), endDiff);
     periodLabel = 'Tuần trước';
   } else if (periodLower.includes('thangnay') || periodLower.includes('thángnày')) {
     startDate = new Date(now.getFullYear(), now.getMonth(), 1);
     periodLabel = 'Tháng này';
   } else if (periodLower.includes('thangtruoc') || periodLower.includes('thángtrước')) {
     startDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    endDate = new Date(now.getFullYear(), now.getMonth(), 1);
     periodLabel = 'Tháng trước';
   } else {
     startDate = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -1840,6 +1871,9 @@ async function handleStats(userId, period) {
       if (!datePart) return false;
       const [day, month, year] = datePart.split('/').map(Number);
       const rowDate = new Date(year, month - 1, day);
+      if (endDate) {
+        return rowDate >= startDate && rowDate < endDate;
+      }
       return rowDate >= startDate;
     } catch {
       return false;
