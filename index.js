@@ -118,6 +118,20 @@ function generateCode(length = 6) {
   return crypto.randomBytes(4).toString('hex').toUpperCase().substring(0, length);
 }
 
+async function generateUniqueDebtCode() {
+  const doc = await getGoogleSheet();
+  const sheet = await getTransactionsSheet(doc);
+  const rows = await sheet.getRows();
+  const existingCodes = rows.map(r => r.get('DebtCode')).filter(Boolean);
+  
+  let code;
+  do {
+    code = generateCode(6);
+  } while (existingCodes.includes(code));
+  
+  return code;
+}
+
 /**
  * Random emoji để làm sinh động responses
  */
@@ -279,7 +293,11 @@ async function getGoogleSheet() {
 // ============================================
 
 async function getTransactionsSheet(doc) {
-  let sheet = doc.sheetsByIndex[0];
+  let sheet = doc.sheetsByTitle['Transactions'];
+  if (!sheet) {
+    // Fallback to first sheet if Transactions doesn't exist
+    sheet = doc.sheetsByIndex[0];
+  }
   await ensureTransactionColumns(sheet);
   return sheet;
 }
@@ -363,6 +381,25 @@ async function setAlias(userId, alias) {
       });
     }
     
+    // Re-verify alias is unique after save (handle concurrent requests)
+    const freshRows = await sheet.getRows();
+    const duplicates = freshRows.filter(r => {
+      const existingAlias = r.get('Alias');
+      return existingAlias && normalizeVietnamese(existingAlias) === inputNorm;
+    });
+    
+    if (duplicates.length > 1) {
+      // Collision detected - append random suffix and update
+      const suffix = Math.floor(Math.random() * 1000);
+      const newAlias = `${alias}${suffix}`;
+      const myRow = freshRows.find(r => r.get('UserID') === userId);
+      if (myRow) {
+        myRow.set('Alias', newAlias);
+        await myRow.save();
+      }
+      return { success: true, message: `✅ Đã đặt alias: @${newAlias} (alias gốc bị trùng)` };
+    }
+    
     return { success: true, message: `✅ Đã đặt alias: @${alias}` };
   } catch (error) {
     console.error('❌ Lỗi setAlias:', error.message);
@@ -429,49 +466,6 @@ async function buildAliasCache() {
 }
 
 /**
- * Tìm kiếm aliases tương tự trong hệ thống (fuzzy search)
- * Trả về danh sách các user có alias match hoặc gần giống
- * @param {string} searchAlias - Alias cần tìm
- * @param {string} excludeUserId - UserId cần loại trừ (chính mình)
- * @returns {Promise<Array<{userId: string, alias: string, fullName: string}>>}
- */
-async function searchGlobalAliases(searchAlias, excludeUserId = '') {
-  try {
-    const doc = await getGoogleSheet();
-    const sheet = await getAliasesSheet(doc);
-    const rows = await sheet.getRows();
-    
-    const inputNorm = normalizeVietnamese(searchAlias);
-    const results = [];
-    
-    for (const row of rows) {
-      const userId = row.get('UserID');
-      const alias = row.get('Alias');
-      
-      if (!alias || userId === excludeUserId) continue;
-      
-      const aliasNorm = normalizeVietnamese(alias);
-      
-      // Exact match hoặc starts with
-      if (aliasNorm === inputNorm || aliasNorm.startsWith(inputNorm) || inputNorm.startsWith(aliasNorm)) {
-        results.push({
-          userId,
-          alias,
-          fullName: alias
-        });
-        // Limit to 5 results
-        if (results.length >= 5) break;
-      }
-    }
-    
-    return results;
-  } catch (error) {
-    console.error('❌ Lỗi searchGlobalAliases:', error.message);
-    return [];
-  }
-}
-
-/**
  * Tạo FriendLink trực tiếp giữa 2 user (không cần sharecode)
  */
 async function createDirectFriendLink(userIdA, userIdB, aliasOfBForA) {
@@ -521,8 +515,15 @@ async function createShareCode(userId) {
   try {
     const doc = await getGoogleSheet();
     const sheet = await getFriendLinksSheet(doc);
+    const rows = await sheet.getRows();
     
-    const code = generateCode(6);
+    // Generate unique code
+    let code;
+    const existingCodes = rows.map(r => r.get('Code'));
+    do {
+      code = generateCode(6);
+    } while (existingCodes.includes(code));
+    
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(); // 24h
     
     await sheet.addRow({
@@ -885,9 +886,24 @@ async function sendMessageWithQuickReplies(recipientId, messageText, quickReplie
 function parseAmount(amountStr) {
   if (!amountStr) return null;
   
-  let cleaned = amountStr.toLowerCase().replace(/,/g, '').replace(/\./g, '').replace(/đ/g, '').trim();
+  let cleaned = amountStr.toLowerCase().replace(/đ/g, '').trim();
+  
+  // Handle comma as decimal separator before removing (e.g., "1,5tr" -> "1.5tr")
+  cleaned = cleaned.replace(/(\d),(\d)/g, '$1.$2');
+  
+  // Remove remaining commas (thousands separator) and dots except last one
+  cleaned = cleaned.replace(/,/g, '').replace(/\.(?=.*\.)/g, '');
   
   let multiplier = 1;
+  
+  // Handle "1tr5" format (1.5 million) - must check before general tr check
+  const trFracMatch = cleaned.match(/^(\d+)tr(\d+)$/);
+  if (trFracMatch) {
+    const mainPart = parseInt(trFracMatch[1]);
+    const fracPart = parseInt(trFracMatch[2]);
+    // "1tr5" = 1.5 million, "2tr3" = 2.3 million
+    return mainPart * 1000000 + fracPart * 100000;
+  }
   
   if (cleaned.match(/tr(ieu)?$/)) {
     multiplier = 1000000;
@@ -1315,7 +1331,7 @@ async function handleAddDebt(userId, amount, debtor, content) {
     // Nếu tìm thấy userId của debtor (đã liên kết) -> tạo PENDING debt để xác nhận
     if (debtorUserId) {
       status = 'PENDING';
-      debtCode = generateCode(6);
+      debtCode = await generateUniqueDebtCode();
     }
     // Nếu không tìm thấy -> vẫn ghi nợ bình thường với tên đó (CONFIRMED, không cần xác nhận)
   }
@@ -1403,7 +1419,7 @@ async function handleRepayDebt(userId, amount, debtor, content) {
     // Nếu tìm thấy userId của debtor (đã liên kết) -> tạo PENDING để xác nhận
     if (debtorUserId) {
       status = 'PENDING';
-      debtCode = generateCode(6);
+      debtCode = await generateUniqueDebtCode();
     }
     // Nếu không tìm thấy -> vẫn ghi trả nợ bình thường với tên đó (CONFIRMED)
   }
@@ -1794,12 +1810,11 @@ async function handleUndo(userId) {
 
 async function handleSearch(userId, keyword) {
   const rows = await getRowsByUser(userId);
-  const myRows = rows.filter(r => r.UserID === userId);
   
-  const keywordLower = keyword.toLowerCase();
-  const results = myRows.filter(r => 
-    r.Content.toLowerCase().includes(keywordLower) ||
-    r.Debtor.toLowerCase().includes(keywordLower)
+  const keywordNorm = normalizeVietnamese(keyword);
+  const results = rows.filter(r => 
+    normalizeVietnamese(r.Content || '').includes(keywordNorm) ||
+    normalizeVietnamese(r.Debtor || '').includes(keywordNorm)
   );
   
   if (results.length === 0) {
@@ -1884,49 +1899,47 @@ async function handleStats(userId, period) {
     return `📊 ${periodLabel}: Không có giao dịch nào.`;
   }
   
-  // Áp dụng logic bù trừ đúng như handleCheckDebt
-  // theyOweMe = họ nợ mình, iOweThem = mình nợ họ
-  let theyOweMe = 0;
-  let iOweThem = 0;
+  // Flow tracking: đếm dòng tiền trong period (không bù trừ cross-period)
+  // theyOweMeFlow = tiền họ nợ/trả mình trong period
+  // iOweThemFlow = tiền mình nợ/trả họ trong period
+  let theyOweMeFlow = 0;
+  let iOweThemFlow = 0;
   
   for (const row of filteredRows) {
     if (row.UserID === userId) {
       // Giao dịch MÌNH tạo
       if (row.Type === 'DEBT') {
-        // Mình ghi nợ: họ bắt đầu nợ mình
-        theyOweMe += row.Amount;
+        // Mình ghi nợ cho họ
+        theyOweMeFlow += row.Amount;
       } else if (row.Type === 'PAID') {
-        // Mình trả nợ cho họ: giảm số mình nợ họ
-        iOweThem -= row.Amount;
+        // Mình trả nợ cho họ (positive flow)
+        iOweThemFlow += row.Amount;
       }
     } else if (row.DebtorUserID === userId) {
       // Giao dịch NGƯỜI KHÁC tạo, mình là debtor
       if (row.Type === 'DEBT') {
-        // Họ ghi nợ: mình bắt đầu nợ họ
-        iOweThem += row.Amount;
+        // Họ ghi mình nợ họ
+        iOweThemFlow += row.Amount;
       } else if (row.Type === 'PAID') {
-        // Họ trả nợ cho mình: giảm số họ nợ mình
-        theyOweMe -= row.Amount;
+        // Họ trả nợ cho mình (positive flow)
+        theyOweMeFlow += row.Amount;
       }
     }
   }
   
-  // Normalize: tính số nợ thực tế (không âm)
-  const netBalance = theyOweMe - iOweThem;
-  const actualTheyOweMe = Math.max(0, netBalance);
-  const actualIOweThem = Math.max(0, -netBalance);
+  const netFlow = theyOweMeFlow - iOweThemFlow;
   
   let responseText = `📊 THỐNG KÊ ${periodLabel.toUpperCase()}\n`;
   responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
   responseText += `📈 Số giao dịch: ${filteredRows.length}\n`;
-  responseText += `🔴 Người khác nợ bạn: ${formatAmount(actualTheyOweMe)}đ\n`;
-  responseText += `🟢 Bạn nợ người khác: ${formatAmount(actualIOweThem)}đ\n`;
-  if (netBalance > 0) {
-    responseText += `💰 Tổng cộng: Người khác nợ bạn ${formatAmount(netBalance)}đ\n`;
-  } else if (netBalance < 0) {
-    responseText += `💰 Tổng cộng: Bạn nợ người khác ${formatAmount(Math.abs(netBalance))}đ\n`;
+  responseText += `🔴 Bạn ghi người khác nợ: ${formatAmount(theyOweMeFlow)}đ\n`;
+  responseText += `🟢 Bạn trả/được ghi nợ: ${formatAmount(iOweThemFlow)}đ\n`;
+  if (netFlow > 0) {
+    responseText += `💰 Dòng tiền ròng: +${formatAmount(netFlow)}đ (ghi nợ nhiều hơn)\n`;
+  } else if (netFlow < 0) {
+    responseText += `💰 Dòng tiền ròng: -${formatAmount(Math.abs(netFlow))}đ (trả/bị ghi nợ nhiều hơn)\n`;
   } else {
-    responseText += `💰 Tổng cộng: Hết nợ! 🎉\n`;
+    responseText += `💰 Dòng tiền ròng: 0đ (cân bằng)\n`;
   }
   
   return responseText;
@@ -2204,14 +2217,10 @@ app.get('/webhook', (req, res) => {
 app.post('/webhook', async (req, res) => {
   const body = req.body;
   
-  // Verify webhook signature nếu APP_SECRET được cấu hình
-  if (config.APP_SECRET) {
-    if (!verifyWebhookSignature(req)) {
-      console.error('❌ Webhook signature verification failed');
-      return res.sendStatus(403);
-    }
-  } else {
-    console.warn('⚠️ APP_SECRET chưa được cấu hình - webhook không được bảo vệ!');
+  // Verify webhook signature
+  if (!verifyWebhookSignature(req)) {
+    console.error('❌ Webhook signature verification failed');
+    return res.sendStatus(403);
   }
   
   if (body.object !== 'page') {
@@ -2276,7 +2285,25 @@ app.post('/webhook', async (req, res) => {
                 result = await handleRepayDebt(senderId, amount, targetAlias, content);
               }
               const text = typeof result === 'string' ? result : result.message;
-              await sendMessage(senderId, text);
+              const debtorAlias = (typeof result === 'object' && result.debtorAlias) || targetAlias;
+              const quickReplies = [
+                {
+                  content_type: 'text',
+                  title: commandType === 'DEBT' ? '📝 Ghi nợ tiếp' : '💵 Trả nợ tiếp',
+                  payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: commandType })
+                },
+                {
+                  content_type: 'text',
+                  title: `📊 Xem @${debtorAlias}`,
+                  payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'CHECK', debtor: debtorAlias })
+                },
+                {
+                  content_type: 'text',
+                  title: '↩️ Undo',
+                  payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'UNDO' })
+                }
+              ];
+              await sendMessageWithQuickReplies(senderId, text, quickReplies);
               continue;
             }
             
@@ -2296,7 +2323,25 @@ app.post('/webhook', async (req, res) => {
                 result = await handleRepayDebt(senderId, amount, chosenAlias, content);
               }
               const text = typeof result === 'string' ? result : result.message;
-              await sendMessage(senderId, text);
+              const debtorAlias = (typeof result === 'object' && result.debtorAlias) || chosenAlias;
+              const quickReplies = [
+                {
+                  content_type: 'text',
+                  title: commandType === 'DEBT' ? '📝 Ghi nợ tiếp' : '💵 Trả nợ tiếp',
+                  payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: commandType })
+                },
+                {
+                  content_type: 'text',
+                  title: `📊 Xem @${debtorAlias}`,
+                  payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'CHECK', debtor: debtorAlias })
+                },
+                {
+                  content_type: 'text',
+                  title: '↩️ Undo',
+                  payload: JSON.stringify({ type: 'SUGGEST_ACTION', action: 'UNDO' })
+                }
+              ];
+              await sendMessageWithQuickReplies(senderId, text, quickReplies);
               continue;
             }
             
