@@ -1631,7 +1631,7 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
       if (row.Type === 'DEBT') {
         debtAmount = row.Amount; // Họ nợ mình
       } else if (row.Type === 'PAID') {
-        paidAmount = row.Amount; // Mình trả cho họ
+        debtAmount = row.Amount; // Mình trả cho họ -> bù trừ phần mình nợ họ
       }
     } else if (row.DebtorUserID === userId) {
       // Giao dịch NGƯỜI KHÁC tạo, mình là DebtorUserID
@@ -1848,7 +1848,7 @@ async function handleStats(userId, period) {
       if (row.Type === 'DEBT') {
         totalOthersOweMe += row.Amount; // Họ nợ mình
       } else if (row.Type === 'PAID') {
-        totalIOweOthers += row.Amount;  // Mình trả cho họ (giảm nợ)
+        totalOthersOweMe += row.Amount;  // Mình trả cho họ -> bù trừ phần mình nợ họ
       }
     } else if (row.DebtorUserID === userId) {
       // Giao dịch NGƯỜI KHÁC tạo, mình là debtor
