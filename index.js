@@ -1444,24 +1444,29 @@ async function handleRepayDebt(userId, amount, debtor, content) {
     const rows = await getRowsByUser(userId);
     const confirmedRows = rows.filter(r => r.Status === 'CONFIRMED');
     
-    // Calculate what user owes to this debtor
-    let owedAmount = 0;
+    // Calculate what they owe user (số tiền họ nợ mình)
+    let theyOweUser = 0;
     for (const row of confirmedRows) {
       const rowDebtor = row.Debtor || 'Chung';
       if (normalizeVietnamese(rowDebtor) !== normalizeVietnamese(resolvedDebtor || 'Chung')) continue;
       
       if (row.UserID === userId && row.Type === 'DEBT') {
-        // User recorded debt to them - they owe user (not relevant for repay)
+        // User ghi họ nợ: họ nợ user
+        theyOweUser += row.Amount;
       } else if (row.UserID === userId && row.Type === 'PAID') {
-        owedAmount -= row.Amount; // Paying reduces what user owes
+        // User ghi họ trả: giảm số họ nợ user
+        theyOweUser -= row.Amount;
       } else if (row.DebtorUserID === userId && row.Type === 'DEBT') {
-        owedAmount += row.Amount; // Someone recorded user owes them
+        // Họ ghi user nợ họ (không liên quan đến trả nợ cho họ)
       } else if (row.DebtorUserID === userId && row.Type === 'PAID') {
-        // They paid user (not relevant)
+        // Họ ghi user trả (không liên quan)
       }
     }
     
-    if (owedAmount < amount) {
+    // Nếu số tiền trả lớn hơn số họ đang nợ (sau khi trừ giao dịch mới)
+    // Lưu ý: giao dịch mới đã được appendRow ở trên nên theyOweUser đã bao gồm
+    // Do đó cần kiểm tra theyOweUser < 0 (đã trả quá)
+    if (theyOweUser < 0) {
       overpayWarning = `\n⚠️ Lưu ý: Bạn đang trả nhiều hơn số nợ hiện tại!`;
     }
   }
@@ -1671,22 +1676,22 @@ async function handleCheckDebt(userId, filterDebtor, onlyOwing = false) {
       displayName = row.Debtor || 'Chung';
       
       if (row.Type === 'DEBT') {
-        // Mình ghi nợ: họ bắt đầu nợ mình
+        // Mình ghi nợ cho họ: họ bắt đầu nợ mình
         theyOweMe = row.Amount;
       } else if (row.Type === 'PAID') {
-        // Mình trả nợ cho họ: giảm số mình nợ họ
-        iOweThem = -row.Amount; // Âm để trừ đi
+        // Mình ghi họ trả: giảm số họ nợ mình
+        theyOweMe = -row.Amount; // Âm để trừ đi
       }
     } else if (row.DebtorUserID === userId) {
       // Giao dịch NGƯỜI KHÁC tạo, mình là DebtorUserID
       displayName = friendAliasMap[row.UserID] || aliasCache[row.UserID] || 'Ai đó';
       
       if (row.Type === 'DEBT') {
-        // Họ ghi nợ: mình bắt đầu nợ họ
+        // Họ ghi mình nợ họ: mình bắt đầu nợ họ
         iOweThem = row.Amount;
       } else if (row.Type === 'PAID') {
-        // Họ trả nợ cho mình: giảm số họ nợ mình
-        theyOweMe = -row.Amount; // Âm để trừ đi
+        // Họ ghi mình trả: giảm số mình nợ họ
+        iOweThem = -row.Amount; // Âm để trừ đi
       }
     } else {
       continue;
@@ -1900,40 +1905,48 @@ async function handleStats(userId, period) {
   }
   
   // Flow tracking: đếm dòng tiền trong period (không bù trừ cross-period)
-  // theyOweMeFlow = tiền họ nợ/trả mình trong period
-  // iOweThemFlow = tiền mình nợ/trả họ trong period
-  let theyOweMeFlow = 0;
-  let iOweThemFlow = 0;
+  // theyOweMeFlow = tổng tiền họ nợ mình (ghi DEBT) - tổng tiền họ trả (ghi PAID)
+  // iOweThemFlow = tổng tiền mình nợ họ (họ ghi DEBT) - tổng tiền mình trả (họ ghi PAID)
+  let totalDebtCreated = 0;   // Tổng tiền ghi nợ (họ nợ mình)
+  let totalPaidReceived = 0;  // Tổng tiền ghi trả (họ trả mình)
+  let totalDebtReceived = 0;  // Tổng tiền bị ghi nợ (mình nợ họ)
+  let totalPaidCreated = 0;   // Tổng tiền mình trả (mình trả họ - không dùng trong app này)
   
   for (const row of filteredRows) {
     if (row.UserID === userId) {
       // Giao dịch MÌNH tạo
       if (row.Type === 'DEBT') {
         // Mình ghi nợ cho họ
-        theyOweMeFlow += row.Amount;
+        totalDebtCreated += row.Amount;
       } else if (row.Type === 'PAID') {
-        // Mình trả nợ cho họ (positive flow)
-        iOweThemFlow += row.Amount;
+        // Mình ghi họ trả
+        totalPaidReceived += row.Amount;
       }
     } else if (row.DebtorUserID === userId) {
       // Giao dịch NGƯỜI KHÁC tạo, mình là debtor
       if (row.Type === 'DEBT') {
         // Họ ghi mình nợ họ
-        iOweThemFlow += row.Amount;
+        totalDebtReceived += row.Amount;
       } else if (row.Type === 'PAID') {
-        // Họ trả nợ cho mình (positive flow)
-        theyOweMeFlow += row.Amount;
+        // Họ ghi mình trả
+        totalPaidCreated += row.Amount;
       }
     }
   }
   
-  const netFlow = theyOweMeFlow - iOweThemFlow;
+  const netFlow = (totalDebtCreated - totalPaidReceived) - (totalDebtReceived - totalPaidCreated);
   
   let responseText = `📊 THỐNG KÊ ${periodLabel.toUpperCase()}\n`;
   responseText += `━━━━━━━━━━━━━━━━━━━━\n`;
   responseText += `📈 Số giao dịch: ${filteredRows.length}\n`;
-  responseText += `🔴 Bạn ghi người khác nợ: ${formatAmount(theyOweMeFlow)}đ\n`;
-  responseText += `🟢 Bạn trả/được ghi nợ: ${formatAmount(iOweThemFlow)}đ\n`;
+  responseText += `🔴 Bạn ghi người khác nợ: ${formatAmount(totalDebtCreated)}đ\n`;
+  responseText += `🟢 Bạn ghi người khác trả: ${formatAmount(totalPaidReceived)}đ\n`;
+  if (totalDebtReceived > 0) {
+    responseText += `🟠 Bạn bị ghi nợ: ${formatAmount(totalDebtReceived)}đ\n`;
+  }
+  if (totalPaidCreated > 0) {
+    responseText += `🔵 Bạn trả nợ: ${formatAmount(totalPaidCreated)}đ\n`;
+  }
   if (netFlow > 0) {
     responseText += `💰 Dòng tiền ròng: +${formatAmount(netFlow)}đ (ghi nợ nhiều hơn)\n`;
   } else if (netFlow < 0) {
